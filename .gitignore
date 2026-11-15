@@ -1,0 +1,7 @@
+
+# NetWatch secrets & captures
+certs/
+*.pem
+*.key
+.env
+*.pcap
