@@ -1,7 +1,40 @@
+# Python bytecode & caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
 
-# NetWatch secrets & captures
-certs/
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Testing & type-checking caches
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# NetWatch PKI & secrets (track scripts, ignore generated certs/keys)
+certs/*.key
+certs/*.crt
+certs/*.pem
+certs/*.csr
 *.pem
 *.key
 .env
+.env.*
+
+# Packet captures & logs
 *.pcap
+*.pcapng
+*.log
+
+# OS & editor artifacts
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
