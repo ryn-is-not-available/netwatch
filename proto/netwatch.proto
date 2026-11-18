@@ -1,0 +1,52 @@
+syntax = "proto3";
+package netwatch.v1;
+
+import "google/protobuf/timestamp.proto";
+
+message EnrollRequest {
+
+    string node_id = 1;
+    string enrollment_token = 2;
+    bytes csr_pem = 3;
+
+}
+
+message EnrollResponse {
+    bytes cert_pem = 1;
+}
+
+message Heartbeat {
+    string node_id = 1;
+    google.protobuf.Timestamp timestamp = 2;
+    double cpu_usage_pct = 3;
+    double memory_usage_pct = 4;
+    int64 uptime_seconds = 5;
+
+}
+
+message ProbeResult {
+    string node_id = 1;
+    string probe_id = 2;
+    google.protobuf.Timestamp timestamp = 3;
+    string probe_type = 4;
+    string probe_target = 5;
+    double latency_ms = 6;
+    double jitter_ms = 7;
+    double packet_loss_pct = 8;
+    bool success = 9;
+    string error_message = 10;
+}
+
+
+message Ack {
+    bool ok = 1;
+    string message = 2;
+    int64 server_timestamp_ms = 3;
+    int64 leader_epoch = 4;
+}
+
+service ControlService {
+    rpc Enroll(EnrollRequest) returns (EnrollResponse);
+    rpc SendHeartbeat(Heartbeat) returns (Ack);
+    rpc SubmitProbeResult(ProbeResult) returns (Ack);
+}
