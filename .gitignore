@@ -10,6 +10,7 @@ venv/
 .venv/
 env/
 ENV/
+.env
 
 # Testing & type-checking caches
 .pytest_cache/
