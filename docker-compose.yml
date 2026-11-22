@@ -15,6 +15,7 @@ x-control-plane-base: &control-plane-base
     NATS_URL: nats://control_plane:${NATS_CONTROL_PLANE_PASSWORD:-dev_cp_pass}@${NATS_HOST:-172.28.0.31}:${NATS_PORT:-4222}
   volumes:
     - ./certs:/app/certs:ro
+    - ./agent:/app/agent:ro
   depends_on:
     timescaledb:
       condition: service_healthy
@@ -27,11 +28,16 @@ x-control-plane-base: &control-plane-base
     retries: 3
     start_period: 30s
 
+x-node-env: &node-env
+  JOIN_TOKEN: ${JOIN_TOKEN:-netwatch-dev-join-token-2026}
+  CP_1_ADDR: 172.28.0.32:50051
+  CP_2_ADDR: 172.28.0.33:50051
+  NATS_URL: nats://telemetry_agent:${NATS_TELEMETRY_AGENT_PASSWORD:-dev_agent_pass}@172.28.0.31:4222
+  CA_CERT_PATH: /app/certs/ca.crt
+  CERT_DIR: /var/lib/netwatch/certs
+
 x-node-base: &node-base
   image: netwatch-agent:latest
-  build:
-    context: .
-    dockerfile: agent/Dockerfile
   restart: unless-stopped
   cap_add:
     - NET_ADMIN
@@ -41,20 +47,15 @@ x-node-base: &node-base
       condition: service_healthy
     control-plane-2:
       condition: service_healthy
-  environment:
-    CP_1_ADDR: 172.28.0.32:50051
-    CP_2_ADDR: 172.28.0.33:50051
-    NATS_URL: nats://control_plane:${NATS_CONTROL_PLANE_PASSWORD:-dev_cp_pass}@${NATS_HOST:-172.28.0.31}:${NATS_PORT:-4222}
   volumes:
     - ./certs:/app/certs:ro
+    - ./agent:/app/agent:ro
   healthcheck:
     test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
     interval: 10s
     timeout: 3s
     retries: 3
     start_period: 15s
-
-
 
 services:
   timescaledb:
@@ -152,9 +153,13 @@ services:
 
   node-1:
     <<: *node-base
+    build:
+      context: .
+      dockerfile: agent/Dockerfile
     container_name: node-1
     hostname: node-1
     environment:
+      <<: *node-env
       NODE_ID: node-1
       DATA_IP: 172.29.0.10
     networks:
@@ -168,6 +173,7 @@ services:
     container_name: node-2
     hostname: node-2
     environment:
+      <<: *node-env
       NODE_ID: node-2
       DATA_IP: 172.29.0.11
     networks:
@@ -181,6 +187,7 @@ services:
     container_name: node-3
     hostname: node-3
     environment:
+      <<: *node-env
       NODE_ID: node-3
       DATA_IP: 172.29.0.12
     networks:
@@ -194,6 +201,7 @@ services:
     container_name: node-4
     hostname: node-4
     environment:
+      <<: *node-env
       NODE_ID: node-4
       DATA_IP: 172.29.0.13
     networks:
@@ -207,6 +215,7 @@ services:
     container_name: node-5
     hostname: node-5
     environment:
+      <<: *node-env
       NODE_ID: node-5
       DATA_IP: 172.29.0.14
     networks:
