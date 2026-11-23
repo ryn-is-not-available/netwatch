@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
-RUN apt-get update && apt-get upgrade -y --no-install-recommends && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir grpcio protobuf cryptography
 
 WORKDIR /app
 
-CMD ["sleep", "infinity"]
+CMD ["python", "-m", "control_plane.api.grpc_server"]

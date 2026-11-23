@@ -1,7 +1,5 @@
 x-control-plane-base: &control-plane-base
-  build:
-    context: .
-    dockerfile: control_plane/Dockerfile
+  image: netwatch-control-plane:latest
   restart: unless-stopped
   environment:
     DB_HOST: ${DB_HOST:-172.28.0.30}
@@ -13,9 +11,12 @@ x-control-plane-base: &control-plane-base
     NATS_PORT: ${NATS_PORT:-4222}
     NATS_CONTROL_PLANE_PASSWORD: ${NATS_CONTROL_PLANE_PASSWORD:-dev_cp_pass}
     NATS_URL: nats://control_plane:${NATS_CONTROL_PLANE_PASSWORD:-dev_cp_pass}@${NATS_HOST:-172.28.0.31}:${NATS_PORT:-4222}
+    JOIN_TOKEN: ${JOIN_TOKEN:-netwatch-dev-join-token-2026}
   volumes:
     - ./certs:/app/certs:ro
     - ./agent:/app/agent:ro
+    - ./shared:/app/shared:ro
+    - ./control_plane:/app/control_plane:ro
   depends_on:
     timescaledb:
       condition: service_healthy
@@ -50,6 +51,7 @@ x-node-base: &node-base
   volumes:
     - ./certs:/app/certs:ro
     - ./agent:/app/agent:ro
+    - ./shared:/app/shared:ro
   healthcheck:
     test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
     interval: 10s
@@ -117,6 +119,9 @@ services:
 
   control-plane-1:
     <<: *control-plane-base
+    build:
+      context: .
+      dockerfile: control_plane/Dockerfile
     container_name: control-plane-1
     environment:
       DB_HOST: ${DB_HOST:-172.28.0.30}
@@ -128,6 +133,7 @@ services:
       NATS_PORT: ${NATS_PORT:-4222}
       NATS_CONTROL_PLANE_PASSWORD: ${NATS_CONTROL_PLANE_PASSWORD:-dev_cp_pass}
       NATS_URL: nats://control_plane:${NATS_CONTROL_PLANE_PASSWORD:-dev_cp_pass}@${NATS_HOST:-172.28.0.31}:${NATS_PORT:-4222}
+      JOIN_TOKEN: ${JOIN_TOKEN:-netwatch-dev-join-token-2026}
       INSTANCE_ID: control-plane-1
     networks:
       MGMT_NET:
@@ -146,6 +152,7 @@ services:
       NATS_PORT: ${NATS_PORT:-4222}
       NATS_CONTROL_PLANE_PASSWORD: ${NATS_CONTROL_PLANE_PASSWORD:-dev_cp_pass}
       NATS_URL: nats://control_plane:${NATS_CONTROL_PLANE_PASSWORD:-dev_cp_pass}@${NATS_HOST:-172.28.0.31}:${NATS_PORT:-4222}
+      JOIN_TOKEN: ${JOIN_TOKEN:-netwatch-dev-join-token-2026}
       INSTANCE_ID: control-plane-2
     networks:
       MGMT_NET:

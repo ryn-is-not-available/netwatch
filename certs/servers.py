@@ -99,12 +99,14 @@ def generate_server_cert(service_name: str, dns_names: list[str], ip_addrs: list
 if __name__ == "__main__":
     generate_server_cert(
         service_name="control-plane",
-        dns_names=["control-plane", "localhost"],
-        ip_addrs=["127.0.0.1"],
-        days=365)
+        dns_names=["control-plane", "control-plane-1", "control-plane-2", "localhost"],
+        ip_addrs=["127.0.0.1", "172.28.0.32", "172.28.0.33"],
+        days=365,
+    )
 
     generate_server_cert(
         service_name="nats",
-        dns_names=["nats", "localhost"],
-        ip_addrs=["127.0.0.1"],
-        days=365)
+        dns_names=["nats", "nats-server-1", "localhost"],
+        ip_addrs=["127.0.0.1", "172.28.0.31"],
+        days=365,
+    )
