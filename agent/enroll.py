@@ -47,7 +47,8 @@ def ensure_enrolled(config: AgentConfig, force: bool = False) -> tuple[Path, Pat
     last_err: Exception | None = None
     for addr in config.cp_addrs:
         try:
-            with grpc.secure_channel(addr, creds) as channel:
+            enroll_addr = f"{addr.rsplit(':', 1)[0]}:50052"
+            with grpc.secure_channel(enroll_addr, creds) as channel:
                 stub = netwatch_pb2_grpc.ControlServiceStub(channel)
                 resp = stub.Enroll(req, timeout=5.0)
 
@@ -65,13 +66,13 @@ def ensure_enrolled(config: AgentConfig, force: bool = False) -> tuple[Path, Pat
             logger.info(
                 "Enrolled node_id=%s via %s; saved 24h cert to %s (expires %s)",
                 config.node_id,
-                addr,
+                enroll_addr,
                 cert_path,
                 cert.not_valid_after_utc.isoformat(),
             )
             return cert_path, key_path
         except grpc.RpcError as exc:
-            logger.warning("Enrollment attempt to %s failed (%s): %s", addr, exc.code(), exc.details())
+            logger.warning("Enrollment attempt to %s failed (%s): %s", enroll_addr, exc.code(), exc.details())
             last_err = exc
 
     raise RuntimeError(f"Failed to enroll node_id={config.node_id} with any control plane") from last_err

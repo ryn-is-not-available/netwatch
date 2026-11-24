@@ -20,6 +20,27 @@ class ControlServiceServicer(netwatch_pb2_grpc.ControlServiceServicer):
         self.join_token = join_token
         self.ca_dir = ca_dir
 
+    def _verify_client_identity(
+        self,
+        context: grpc.ServicerContext,
+        expected_node_id: str):
+        if not expected_node_id:
+            context.abort(
+                grpc.StatusCode.INVALID_ARGUMENT,
+                "NODE ID IS MANDATORY"
+            )
+        resp = context.auth_context().get("x509_common_name")
+        if not resp:
+            context.abort(
+                grpc.StatusCode.UNAUTHENTICATED,
+                "CLIETN CERTIFICATION IS REQUIRED")
+        if resp[0].decode("utf-8") != expected_node_id.strip() :
+            context.abort(
+                grpc.StatusCode.PERMISSION_DENIED,
+                "PERMESSION DENIED"
+            )
+        return True
+
     def Enroll(
         self,
         request: netwatch_pb2.EnrollRequest,
@@ -52,12 +73,26 @@ class ControlServiceServicer(netwatch_pb2_grpc.ControlServiceServicer):
         request: netwatch_pb2.Heartbeat,
         context: grpc.ServicerContext,
     ) -> netwatch_pb2.Ack:
+        self._verify_client_identity(context,request.node_id)
         return netwatch_pb2.Ack(
             ok=True,
             message="heartbeat received",
             server_timestamp_ms=int(time.time() * 1000),
             leader_epoch=1,
         )
+
+    def SubmitProbeResult(
+            self,
+            request : netwatch_pb2.ProbeResult,
+            context : grpc.ServicerContext
+            ) -> netwatch_pb2.Ack:
+            self._verify_client_identity(context,request.node_id)
+            return netwatch_pb2.Ack(
+                ok=True,
+                message="Probe received",
+                server_timestamp_ms=int(time.time()*1000),
+                leader_epoch=1,
+            )
 
 
 def serve() -> None:
@@ -72,10 +107,15 @@ def serve() -> None:
 
     # require_client_auth=False allows un-enrolled nodes to connect over TLS using JOIN_TOKEN;
     # RPCs like SendHeartbeat will verify peer client certificates at the application/interceptor layer.
-    creds = grpc.ssl_server_credentials(
+    creds_enroll = grpc.ssl_server_credentials(
         [(server_key, server_cert)],
         root_certificates=ca_cert,
         require_client_auth=False,
+    )
+    creds_mtls = grpc.ssl_server_credentials(
+        [(server_key, server_cert)],
+        root_certificates=ca_cert,
+        require_client_auth=True,
     )
 
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
@@ -83,9 +123,10 @@ def serve() -> None:
         ControlServiceServicer(join_token=join_token, ca_dir=cert_dir),
         server,
     )
-    server.add_secure_port("0.0.0.0:50051", creds)
+    server.add_secure_port("0.0.0.0:50051", creds_mtls)
+    server.add_secure_port("0.0.0.0:50052", creds_enroll)
     server.start()
-    logger.info("Control plane gRPC server listening with TLS on 0.0.0.0:50051")
+    logger.info("Control plane gRPC server listening with mTLS on 0.0.0.0:50051 and TLS on 0.0.0.0:50052")
     server.wait_for_termination()
 
 
