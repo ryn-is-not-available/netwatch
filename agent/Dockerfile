@@ -8,4 +8,4 @@ RUN pip install --no-cache-dir grpcio protobuf cryptography
 
 WORKDIR /app
 
-CMD ["sleep", "infinity"]
+CMD ["python","-m", "agent.main"]
