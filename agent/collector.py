@@ -19,6 +19,7 @@ class SystemMetrics:
     mem_used_mb: float
     mem_total_mb: float
     mem_pct: float
+    uptime_sec: float
     data_iface: str
     rx_bytes: int
     tx_bytes: int
@@ -38,6 +39,7 @@ class MetricsCollector:
         proc_stat_path: str = "/proc/stat",
         proc_meminfo_path: str = "/proc/meminfo",
         proc_net_dev_path: str = "/proc/net/dev",
+        proc_uptime_path: str = "/proc/uptime",
     ) -> None:
         self.data_ip = data_ip if data_ip is not None else os.getenv("DATA_IP", "")
         self.data_iface = data_iface if data_iface is not None else self._detect_data_iface()
@@ -46,6 +48,7 @@ class MetricsCollector:
         self.proc_meminfo_path = proc_meminfo_path
         self.proc_net_dev_path = proc_net_dev_path
         self._prev_cpu: Optional[tuple[int, int]] = None  # (idle, total)
+        self.proc_uptime_path = proc_uptime_path
 
     def _detect_data_iface(self) -> str:
         if not self.data_ip:
@@ -183,16 +186,32 @@ class MetricsCollector:
         
         return results
 
+    def read_uptime_sec(self) -> float:
+        with open(self.proc_uptime_path, "r", encoding="utf-8") as f:
+            raw = f.read().strip().split()
+
+        if not raw:
+            raise ValueError(f"Empty {self.proc_uptime_path}")
+
+        uptime = float(raw[0])
+        if uptime < 0:
+            raise ValueError(f"Negative uptime in {self.proc_uptime_path}: {uptime}")
+
+        return uptime
+
+
     def collect(self) -> SystemMetrics:
         cpu_pct = self.read_cpu_pct()
         mem_used_mb, mem_total_mb, mem_pct = self.read_mem_info()
         net = self.read_net_counters()
         neighbors = self.probe_neighbors()
+        uptime = self.read_uptime_sec
         return SystemMetrics(
             cpu_pct=cpu_pct,
             mem_used_mb=mem_used_mb,
             mem_total_mb=mem_total_mb,
             mem_pct=mem_pct,
+            uptime_sec=uptime,
             data_iface=self.data_iface,
             rx_bytes=net["rx_bytes"],
             tx_bytes=net["tx_bytes"],
