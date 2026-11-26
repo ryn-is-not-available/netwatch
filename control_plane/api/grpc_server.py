@@ -1,12 +1,17 @@
-from concurrent import futures
+import asyncio
 import hmac
 import logging
 import os
-from pathlib import Path
 import time
 import grpc
-from certs.client import sign_client_csr
+import nats
+from nats.js.api import RetentionPolicy, StreamConfig , StorageType
 from shared import netwatch_pb2, netwatch_pb2_grpc
+from nats.js.errors import NotFoundError
+from certs.client import sign_client_csr
+from concurrent import futures
+from pathlib import Path
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -95,6 +100,47 @@ class ControlServiceServicer(netwatch_pb2_grpc.ControlServiceServicer):
             )
 
 
+async def _ensure_telemetry_stream(nats_url: str, retries: int = 15, delay_s: float = 1.0) -> None:
+    nc = None
+    for attempt in range(1, retries + 1):
+        try:
+            nc = await nats.connect(
+                servers=[nats_url],
+                name="control-plane-bootstrap",
+                connect_timeout=2.0,
+            )
+            break
+        except Exception as exc:
+            if attempt == retries:
+                raise
+            logger.warning(
+                "Waiting for NATS before JetStream bootstrap (attempt %d/%d): %s",
+                attempt,
+                retries,
+                exc,
+            )
+            await asyncio.sleep(delay_s)
+
+    try:
+        js = nc.jetstream()
+        stream_cfg = StreamConfig(
+            name="TELEMETRY",
+            subjects=["telemetry.>"],
+            retention=RetentionPolicy.LIMITS,
+            storage=StorageType.FILE,
+            max_age=24 * 60 * 60,  # 24h retention in seconds
+            duplicate_window=120,  # 2m window matching Nats-Msg-Id header
+        )
+        try:
+            await js.stream_info("TELEMETRY")
+            await js.update_stream(stream_cfg)
+            logger.info("Verified JetStream stream TELEMETRY (subjects=['telemetry.>'])")
+        except NotFoundError:
+            await js.add_stream(stream_cfg)
+            logger.info("Created JetStream stream TELEMETRY (subjects=['telemetry.>'])")
+    finally:
+        await nc.drain()
+
 def serve() -> None:
     join_token = (os.environ.get("JOIN_TOKEN") or "").strip()
     if not join_token:
@@ -125,6 +171,11 @@ def serve() -> None:
     )
     server.add_secure_port("0.0.0.0:50051", creds_mtls)
     server.add_secure_port("0.0.0.0:50052", creds_enroll)
+
+    nats_url = (os.environ.get("NATS_URL") or "").strip()
+    if not nats_url :
+        raise RuntimeError("NATS_URL environment variable is required")
+    asyncio.run(_ensure_telemetry_stream(nats_url))
     server.start()
     logger.info("Control plane gRPC server listening with mTLS on 0.0.0.0:50051 and TLS on 0.0.0.0:50052")
     server.wait_for_termination()
