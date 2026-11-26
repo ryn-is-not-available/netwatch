@@ -4,7 +4,7 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends iproute2 iputils-ping traceroute && \
     rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir grpcio protobuf cryptography
+RUN pip install --no-cache-dir grpcio protobuf cryptography nats-py
 
 WORKDIR /app
 
