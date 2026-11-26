@@ -178,13 +178,14 @@ class MetricsCollector:
 
 
 
-    def probe_neighbors(self) -> list[NeighborStatus]:
-        results: list[NeighborStatus] = []
+    def probe_neighbors(self,max_workers : int =32) -> list[NeighborStatus]:
+        if not self.peer_ips :
+            return []
+
+        workers = min(max_workers,len(self.peer_ips))
         
-        for ip in self.peer_ips:
-            results.append(self._ping_one(ip))
-        
-        return results
+        with ThreadPoolExecutor(max_workers=workers) as executor :
+            return list(executor.map(self._ping_one,self.peer_ips))
 
     def read_uptime_sec(self) -> float:
         with open(self.proc_uptime_path, "r", encoding="utf-8") as f:
@@ -205,7 +206,7 @@ class MetricsCollector:
         mem_used_mb, mem_total_mb, mem_pct = self.read_mem_info()
         net = self.read_net_counters()
         neighbors = self.probe_neighbors()
-        uptime = self.read_uptime_sec
+        uptime = self.read_uptime_sec()
         return SystemMetrics(
             cpu_pct=cpu_pct,
             mem_used_mb=mem_used_mb,
