@@ -188,9 +188,16 @@ CREATE TABLE probe_results (
 CREATE TABLE node_metrics (
     time TIMESTAMPTZ NOT NULL,
     node_id VARCHAR(255) NOT NULL,
+    boot_id UUID NOT NULL,
+    seq_id BIGINT NOT NULL,
     cpu_usage_pct NUMERIC(5, 2),
     memory_usage_pct NUMERIC(5, 2),
-    uptime_seconds BIGINT
+    uptime_seconds BIGINT,
+    data_iface VARCHAR(64),
+    rx_bytes BIGINT,
+    tx_bytes BIGINT,
+    rx_drops BIGINT,
+    tx_drops BIGINT
 );
 
 CREATE TABLE interface_metrics (
@@ -210,6 +217,10 @@ CREATE TABLE interface_metrics (
 SELECT create_hypertable('probe_results', 'time', if_not_exists => TRUE);
 SELECT create_hypertable('node_metrics', 'time', if_not_exists => TRUE);
 SELECT create_hypertable('interface_metrics', 'time', if_not_exists => TRUE);
+
+CREATE UNIQUE INDEX uq_node_metrics_tick
+    ON node_metrics (time, node_id, boot_id, seq_id);
+
 
 
 ALTER TABLE probe_results SET (

@@ -158,6 +158,31 @@ services:
       MGMT_NET:
         ipv4_address: 172.28.0.33
 
+  worker:
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    image: netwatch-worker:latest
+    container_name: netwatch-worker
+    restart: unless-stopped
+    environment:
+      DB_DSN: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-netwatch_dev_pass}@172.28.0.30:5432/${POSTGRES_DB:-netwatch}
+      NATS_URL: nats://worker_consumer:${NATS_WORKER_CONSUMER_PASSWORD:-dev_worker_pass}@172.28.0.31:4222
+    volumes:
+      - ./worker:/app/worker:ro
+      - ./shared:/app/shared:ro
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      control-plane-1:
+        condition: service_healthy
+    networks:
+      MGMT_NET:
+        ipv4_address: 172.28.0.34
+
+
   node-1:
     <<: *node-base
     build:
