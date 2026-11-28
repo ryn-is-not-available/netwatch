@@ -27,7 +27,7 @@ netwatch/
 │   └── ui/              # Interactive Cytoscape.js topology & time-travel web UI
 ├── agent/               # Outbound node agent, RingBuffer, /proc collector, ActiveProber
 ├── worker/              # NATS JetStream consumer & TimescaleDB staging upsert worker
-├── ai_worker/           # Read-only Claude diagnosis service (evidence, structured output, citation checks)
+├── ai_worker/           # Read-only Gemini diagnosis service (evidence, structured output, citation checks)
 ├── certs/               # PKI helpers (CA, server certs, node CSR signing); generated keys are gitignored
 ├── scripts/             # PKI bootstrap (gen_certs.py), proto codegen, and fault-injection verification
 ├── tests/               # Unit and integration test suite
@@ -87,7 +87,7 @@ docker compose ps -a
 | **Control Plane 2 (Standby)** | `control-plane-2` | `http://localhost:8001` | Warm HA replica (auto-promotes in `< 5s` on leader loss) |
 | **TimescaleDB (PG 16)** | `timescaledb` | `localhost:5432` | Bitemporal topology, hypertables, `leader_epoch`, `audit_log` |
 | **NATS JetStream** | `nats-server-1` | `4222` (client), `8222` (HTTP) | `TELEMETRY` stream (`telemetry.>`) |
-| **AI diagnostic worker** | `netwatch-ai-worker` | *None (internal, token-protected)* | Read-only Claude diagnosis behind `POST /ai/diagnose` |
+| **AI diagnostic worker** | `netwatch-ai-worker` | *None (internal, token-protected)* | Read-only Gemini diagnosis behind `POST /ai/diagnose` |
 | **Monitored Nodes (×5)** | `node-1` .. `node-5` | *None (outbound-only)* | Dual-homed on `MGMT_NET` and `DATA_NET` (Docker picks which is `eth0`/`eth1`; the agent finds the data interface by its `172.29.0.x` address) |
 
 ---
@@ -107,14 +107,14 @@ Open **http://localhost:8000** (or **:8001**, either replica works) and sign in.
 
 ### AI diagnosis
 
-**AI diagnose** (operator) asks Claude (`claude-opus-5-5`) to explain the network's current state. Each finding comes back as a pending fix with an `AI` badge and the evidence it cites.
+**AI diagnose** (operator) asks Google Gemini (`gemini-3.8-flash` by default, set with `AI_MODEL`) to explain the network's current state. Each finding comes back as a pending fix with an `AI` badge and the evidence it cites.
 
 - **Evidence in, report out:** the `ai-worker` reads a snapshot: nodes, observed links with 60s loss and latency, declared-but-missing links, open alerts, and recent traces. Every item has an id (`link:node-1->node-3`, `alert:<uuid>`, ...). One structured-output request returns a JSON report with a fixed schema. There are no tools and no agent loop: the model can't fetch anything or act.
 - **Citations are verified:** findings that cite nothing, or cite an id that isn't in the evidence, are dropped. Suggested actions (`declare_link`, `run_trace`) are re-checked against the same rules as *Apply*; any that fail the check are removed. The console reports how many findings were dropped or adjusted.
 - **Prompt-injection hardening:** node names and alert text are untrusted, since nodes choose their own names at enrollment. They're stripped of control characters, length-capped and sent as escaped JSON inside `<evidence>` (`</` is escaped, so a name can't close the block). The system prompt tells the model to treat that text as data, never as instructions, and to report it as possible tampering.
 - **Sandboxed and read-only:** the worker connects to the database as `netwatch_ai`, which has `SELECT` on a few columns only (no users, audit log or certificates) and `default_transaction_read_only`. It runs as a non-root user on a read-only filesystem with no Linux capabilities. It has no published port and answers only requests carrying `AI_WORKER_TOKEN`. Only the control plane writes the resulting recommendations, on the fenced leader path.
 - **Cost guard:** one diagnosis runs at a time, with a 30s cooldown per control plane. Token usage is recorded in the audit log.
-- **Setup:** set `ANTHROPIC_API_KEY` in `.env`, then run `docker compose up -d ai-worker`. Without a key, the button says AI isn't configured. Safety-classifier declines are retried server-side on the recommended fallback model (`fallbacks: "default"`).
+- **Setup:** set `GEMINI_API_KEY` in `.env` (copy `.env.example`), then run `docker compose up -d ai-worker`. Without a key, the button says AI isn't configured. Each request has a 90 s timeout and up to 3 attempts. When Google answers `503 high demand` (a temporary capacity limit on their side), the console says so and you can retry a minute later.
 - **Operator Actions:** Trigger A → B path traces, run drift diagnosis, apply/dismiss recommendations and acknowledge alerts (`operator`). Revoke or reinstate nodes and manage users (`admin`). Every write is recorded in the append-only `audit_log` with the real client IP. A revoked node is refused on heartbeat, probe submission and re-enrollment, and its links are closed.
 - **Alerts:** the leader's `AlertEngine` checks every observed link every 5s using a 30s average. It raises a **packet loss** alert above 2% (`critical` from 20%) and a **latency** alert above the link's declared `expected_latency_ms` (20 ms for undeclared links). A rule must stay breached for 15s (`PENDING`) before it fires. It resolves only once loss is back at or below 1%, or latency at or below 80% of the SLO, so a value hovering at the threshold doesn't flap. Timers survive leader failover (`alert_timers`). Alerts for links that disappear are resolved. Separately, the `LeaseManager` raises one `Node unreachable` alert per offline node.
 - **Either replica works:** only the leader executes writes. The standby forwards write requests to it over `MGMT_NET` (`PEER_REST_URL`) and returns the leader's response. It answers `503` only while no leader is reachable, for example mid-election.

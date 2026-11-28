@@ -13,11 +13,10 @@ import os
 import threading
 from typing import Any
 
-import anthropic
 from fastapi import FastAPI, Header, HTTPException
 import psycopg
 
-from ai_worker.diagnose import DiagnosisError, MODEL, ask_claude, credentials_configured
+from ai_worker.diagnose import DiagnosisError, MODEL, ask_model, credentials_configured, make_client
 from ai_worker.evidence import build_evidence, verify
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -47,7 +46,7 @@ def diagnose(x_ai_worker_token: str = Header(default="")) -> dict[str, Any]:
     if not credentials_configured():
         raise HTTPException(
             status_code=503,
-            detail="AI diagnosis is not configured: set ANTHROPIC_API_KEY for the ai-worker service (see .env.example)",
+            detail="AI diagnosis is not configured: set GEMINI_API_KEY for the ai-worker service",
         )
     if not _one_at_a_time.acquire(blocking=False):
         raise HTTPException(status_code=429, detail="A diagnosis is already running; try again shortly")
@@ -55,17 +54,9 @@ def diagnose(x_ai_worker_token: str = Header(default="")) -> dict[str, Any]:
         with psycopg.connect(_db_dsn()) as conn:
             ev = build_evidence(conn)
         try:
-            report, meta = ask_claude(anthropic.Anthropic(), ev)
+            report, meta = ask_model(make_client(os.environ["GEMINI_API_KEY"]), ev)
         except DiagnosisError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
-        except anthropic.AuthenticationError as exc:
-            raise HTTPException(status_code=503, detail="The Anthropic API rejected the configured credentials") from exc
-        except anthropic.RateLimitError as exc:
-            raise HTTPException(status_code=429, detail="Anthropic API rate limit reached; try again later") from exc
-        except anthropic.APIStatusError as exc:
-            raise HTTPException(status_code=502, detail=f"Anthropic API error ({exc.status_code})") from exc
-        except anthropic.APIConnectionError as exc:
-            raise HTTPException(status_code=502, detail="Could not reach the Anthropic API") from exc
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
 
         findings, notes = verify(report, ev)
         logger.info(

@@ -1,4 +1,4 @@
-"""AI diagnostic worker: evidence, prompt-injection hardening, citation verification, API (Claude mocked)."""
+"""AI diagnostic worker: evidence, prompt-injection hardening, citation verification, API (Gemini mocked)."""
 import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -70,32 +70,52 @@ def test_verify_drops_uncited_and_fabricated_findings_and_rechecks_actions() -> 
     assert any("not in the evidence" in n and "node-9" in n for n in notes)
 
 
-def _response(stop_reason="end_turn", text=None, category=None):
-    content = [SimpleNamespace(type="text", text=text)] if text is not None else []
+def _response(text=None, finish="STOP", block_reason=None):
+    from google.genai import types
     return SimpleNamespace(
-        stop_reason=stop_reason, content=content, model="claude-opus-5-5",
-        stop_details=SimpleNamespace(category=category) if category else None,
-        usage=SimpleNamespace(input_tokens=900, output_tokens=300),
+        text=text,
+        candidates=[SimpleNamespace(finish_reason=getattr(types.FinishReason, finish))],
+        prompt_feedback=SimpleNamespace(block_reason=block_reason) if block_reason else None,
+        usage_metadata=SimpleNamespace(prompt_token_count=900, candidates_token_count=300),
     )
 
 
-def test_ask_claude_request_shape_and_refusal_handling() -> None:
+def test_ask_model_request_shape_and_failure_handling() -> None:
+    from google.genai.errors import ClientError
+
     client = MagicMock()
-    client.beta.messages.create.return_value = _response(text=json.dumps({"summary": "ok", "findings": []}))
-    report, meta = dx.ask_claude(client, _ev())
-    kwargs = client.beta.messages.create.call_args.kwargs
-    assert kwargs["model"] == "claude-opus-5-5" and kwargs["fallbacks"] == "default"
-    assert kwargs["betas"] == ["server-side-fallback-2026-07-01"]
-    assert kwargs["output_config"]["format"]["schema"] is dx.OUTPUT_SCHEMA
-    assert "thinking" not in kwargs and "tools" not in kwargs  # no tools: the model cannot act
+    client.models.generate_content.return_value = _response(json.dumps({"summary": "ok", "findings": []}))
+    report, meta = dx.ask_model(client, _ev())
+    kwargs = client.models.generate_content.call_args.kwargs
+    cfg = kwargs["config"]
+    assert kwargs["model"] == dx.MODEL
+    assert cfg.system_instruction == dx.SYSTEM_PROMPT  # rules kept apart from the untrusted evidence
+    assert cfg.response_mime_type == "application/json" and cfg.response_json_schema is dx.OUTPUT_SCHEMA
+    assert not cfg.tools  # no tools: the model cannot act
+    assert kwargs["contents"].startswith("<evidence>")
     assert report == {"summary": "ok", "findings": []} and meta["output_tokens"] == 300
 
-    client.beta.messages.create.return_value = _response("refusal", category="cyber")
+    client.models.generate_content.return_value = _response(None, block_reason="SAFETY")
     with pytest.raises(dx.DiagnosisError, match="declined"):
-        dx.ask_claude(client, _ev())
-    client.beta.messages.create.return_value = _response("max_tokens", text="{")
+        dx.ask_model(client, _ev())
+    client.models.generate_content.return_value = _response("{", finish="MAX_TOKENS")
     with pytest.raises(dx.DiagnosisError, match="cut off"):
-        dx.ask_claude(client, _ev())
+        dx.ask_model(client, _ev())
+    client.models.generate_content.side_effect = ClientError(403, {"error": {"message": "bad key", "status": "PERMISSION_DENIED"}})
+    with pytest.raises(dx.DiagnosisError, match="GEMINI_API_KEY") as err:
+        dx.ask_model(client, _ev())
+    assert err.value.status == 503
+
+    from google.genai.errors import ServerError
+    client.models.generate_content.side_effect = ServerError(503, {"error": {"message": "high demand", "status": "UNAVAILABLE"}})
+    with pytest.raises(dx.DiagnosisError, match="overloaded") as err:
+        dx.ask_model(client, _ev())
+    assert err.value.status == 503
+
+
+def test_client_is_bounded_by_timeout_and_retries() -> None:
+    opts = dx.make_client("test-key")._api_client._http_options
+    assert opts.timeout == dx.REQUEST_TIMEOUT_MS and opts.retry_options.attempts == 3
 
 
 def test_worker_endpoint_auth_credentials_and_verified_output(monkeypatch) -> None:
@@ -106,19 +126,18 @@ def test_worker_endpoint_auth_credentials_and_verified_output(monkeypatch) -> No
     monkeypatch.setenv("AI_DB_DSN", "postgresql://unused")
     assert client.post("/diagnose", headers={"X-AI-Worker-Token": "nope"}).status_code == 401
 
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     r = client.post("/diagnose", headers={"X-AI-Worker-Token": "tok"})
-    assert r.status_code == 503 and "ANTHROPIC_API_KEY" in r.json()["detail"]
+    assert r.status_code == 503 and "GEMINI_API_KEY" in r.json()["detail"]
 
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     report = {"summary": "node-2 is down", "findings": [
         _finding(["alert:a1b2", "node:node-2"], ("run_trace", "node-1", "node-2")),
         _finding(["alert:does-not-exist"]),
     ]}
     with patch.object(main, "build_evidence", return_value=_ev()), \
          patch.object(main.psycopg, "connect", return_value=FakeConnection(FakeCursor())), \
-         patch.object(main, "ask_claude", return_value=(report, {"model": "claude-opus-5-5", "input_tokens": 1, "output_tokens": 2})):
+         patch.object(main, "ask_model", return_value=(report, {"model": "gemini-3.8-flash", "input_tokens": 1, "output_tokens": 2})):
         body = client.post("/diagnose", headers={"X-AI-Worker-Token": "tok"}).json()
     assert body["summary"] == "node-2 is down" and len(body["findings"]) == 1
     assert body["findings"][0]["action"] == {"type": "run_trace", "src": "node-1", "dst": "node-2"}
@@ -145,7 +164,7 @@ def test_control_plane_stores_ai_findings_and_rate_limits(monkeypatch) -> None:
         cursors.append(cur)
         return FakeConnection(cur)
 
-    worker_reply = {"summary": "s", "model": "claude-opus-5-5", "verification_notes": ["dropped x"],
+    worker_reply = {"summary": "s", "model": "gemini-3.8-flash", "verification_notes": ["dropped x"],
                     "findings": [{"title": "Lossy path", "severity": "warning", "explanation": "e", "suggested_fix": "f",
                                   "citations": ["link:node-1->node-2"], "action": {"type": "none"}}]}
     resp = MagicMock()
