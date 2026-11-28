@@ -12,11 +12,14 @@
 <body>
 <header class="top">
   <div class="brand"><svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><circle cx="4" cy="10" r="2.5"/><circle cx="16" cy="4" r="2.5"/><circle cx="16" cy="16" r="2.5"/><path d="M6 9l8-4M6 11l8 4" stroke="currentColor" fill="none" stroke-width="1.5"/></svg>NetWatch</div>
-  <span id="leader" class="pill">Connecting…</span>
+  <span id="overall" class="status-badge" role="status">Connecting…</span>
+  <span id="leader" class="conn" title="Which control plane this page talks to"></span>
   <span id="mode" class="pill live">Live</span>
   <span id="who" class="pill" hidden></span>
   <button id="logoutBtn" hidden>Sign out</button>
 </header>
+
+<section id="summary" class="summary" aria-label="Network status at a glance"></section>
 
 <div class="actions">
   <fieldset><legend>Trace path</legend>
@@ -30,9 +33,11 @@
   <section class="stage">
     <div id="cy" role="img" aria-label="Network topology graph"></div>
     <div id="empty" class="empty" hidden>No nodes in this snapshot.</div>
+    <div id="edgeTip" class="edge-tip" hidden></div>
+    <p class="hint">Click a node for its details and charts · hover a line for latency and loss</p>
     <div class="legend">
-      <span><i class="ln dec"></i>Declared</span><span><i class="ln obs"></i>Observed</span>
-      <span><i class="ln drift"></i>Drift</span><span><i class="ln trace"></i>Traced</span>
+      <span><i class="ln obs"></i>Healthy</span><span><i class="ln warn"></i>Degraded</span>
+      <span><i class="ln drift"></i>Missing</span><span><i class="ln dec"></i>Undeclared</span><span><i class="ln trace"></i>Traced</span>
     </div>
     <div class="zoom"><button id="fit" title="Fit to view" aria-label="Fit to view">Fit</button><button id="relayout" title="Re-run layout">Relayout</button></div>
     <div class="timebar">
@@ -40,8 +45,8 @@
       <select id="histRange" aria-label="History range"><option value="30">30 min</option><option value="360">6 h</option><option value="1440">24 h</option></select>
       <input id="slider" type="range" min="-30" max="0" step="1" value="0" aria-label="Minutes before now">
       <output id="timeLabel">Now</output>
-      <label class="known" title="Show what NetWatch believed at that moment, rather than today's corrected view of it"><input id="knownThen" type="checkbox" checked> as known then</label>
-      <button id="liveBtn">Back to live</button>
+      <label class="known" title="Checked: show what NetWatch believed at that moment. Unchecked: show that moment with everything learned since."><input id="knownThen" type="checkbox" checked> Show what was known then</label>
+      <button id="liveBtn" hidden>Back to live</button>
     </div>
   </section>
 

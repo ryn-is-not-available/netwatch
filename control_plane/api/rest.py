@@ -149,6 +149,15 @@ def create_rest_app(db_dsn: str, elector: LeaderElector) -> FastAPI:
         return _dep
 
     @app.middleware("http")
+    async def revalidate_ui_assets(request: Request, call_next):
+        """Browsers must re-check the console's HTML/JS/CSS on each load (unchanged files come
+        back as 304), so an upgraded control plane never runs against stale cached scripts."""
+        response = await call_next(request)
+        if request.url.path == "/" or request.url.path.startswith("/ui/"):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
+    @app.middleware("http")
     async def forward_writes_to_leader(request: Request, call_next):
         """A standby forwards state-changing requests to the leader over MGMT_NET, so clients
         (the UI included) can use either replica. A request is never forwarded twice."""
