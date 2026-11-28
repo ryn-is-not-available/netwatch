@@ -1,30 +1,178 @@
 # NetWatch
 
-> Declarative, event-driven distributed network observability platform with outbound-only mTLS agents, bitemporal topology graphs, and audited read-only AI diagnostics.
+> Declarative, event-driven distributed network observability platform with outbound-only mTLS agents, bitemporal topology graphs, and epoch-fenced high availability.
 
 ## Overview
 
-NetWatch monitors distributed infrastructure across isolated management (`MGMT_NET`) and data (`DATA_NET`) planes without opening inbound ports on monitored nodes.
+NetWatch monitors distributed infrastructure across isolated management (`MGMT_NET`) and data (`DATA_NET`) planes without opening inbound listening ports on monitored nodes.
 
 ### Core Architecture
 
-* **Control Plane (`control_plane/`):** Stateless FastAPI + gRPC replicas with PostgreSQL advisory-lock leader election and epoch fencing (`Observe → Diff` drift reconciliation).
-* **Node Agents (`agent/`):** Outbound-only gRPC heartbeats with piggybacked probe commands and a 1,000-tick circular RAM buffer for outage resilience.
-* **Ingestion & Storage (`worker/`, `db/`):** NATS JetStream message bus feeding a deduplicating batch worker (`boot_id`, `seq_id`) into PostgreSQL 16 + TimescaleDB hypertables.
-* **Web Console & AI Ops (`web_ui/`, `ai_worker/`):** Bitemporal topology time-travel visualization and a sandboxed, read-only diagnostic advisor.
+- **Control Plane (`control_plane/`):** Two active-passive FastAPI + gRPC replicas (`control-plane-1` on `:8000`, `control-plane-2` on `:8001`) using PostgreSQL advisory-lock leader election (`leader_epoch`) and fenced database writes (`elector.fenced_execute`).
+- **Node Agents (`agent/`):** Outbound-only mTLS gRPC heartbeats (every 5s) with piggybacked ICMP/peer probe commands (`ActiveProber`), `/proc` host and interface metrics collection, and a 1,000-tick circular RAM ring buffer for NATS outage resilience.
+- **Ingestion & Bitemporal Storage (`worker/`, `db/`):** NATS JetStream (`TELEMETRY` stream) feeding a deduplicating batch worker (`boot_id`, `seq_id`) into PostgreSQL 16 + TimescaleDB hypertables with non-overlapping bitemporal `tstzrange` intervals (`valid_during`, `recorded_during`).
+- **Web Console (`control_plane/ui/`):** Live Cytoscape.js topology map showing declared vs. observed links, drift highlights, a bitemporal time-travel slider, and operator controls (`Trace`, `Diagnose`, `Approve/Reject`, `Revoke`).
 
 ## Project Structure
 
 ```text
 netwatch/
-├── proto/           # gRPC service and message definitions
-├── db/              # PostgreSQL + TimescaleDB schema and bitemporal constraints
-├── shared/          # Generated Protobuf stubs and shared schemas
-├── control_plane/   # Domain logic, leader election, gRPC & REST servers
-├── agent/           # Outbound node agent, ring buffer, and /proc collector
-├── worker/          # NATS JetStream to TimescaleDB batch loader
-├── ai_worker/       # Read-only LLM diagnostic worker with citation verification
-├── web_ui/          # Interactive topology map and time-travel console
-├── benchmarks/      # Chaos testing (tc netem, iperf3) and T0/T1 evaluations
-└── tests/           # Unit and integration test suite
+├── proto/               # gRPC service (ControlService) and message definitions
+├── db/                  # PostgreSQL 16 + TimescaleDB schema, GIST constraints, hypertables
+├── shared/              # Generated Protobuf stubs and shared schemas
+├── control_plane/
+│   ├── adapters/        # PostgreSQL advisory-lock LeaderElector & epoch fencing
+│   ├── api/             # FastAPI REST console/API (:8000/:8001) & gRPC mTLS/TLS servers
+│   ├── domain/          # LeaseManager, TopologyGraphEngine (Dijkstra + drift), AlertEvaluator
+│   └── ui/              # Interactive Cytoscape.js topology & time-travel web UI
+├── agent/               # Outbound node agent, RingBuffer, /proc collector, ActiveProber
+├── worker/              # NATS JetStream consumer & TimescaleDB staging upsert worker
+├── scripts/             # Cert generation, proto codegen, and fault-injection verification
+├── tests/               # Unit and integration test suite
+└── docker-compose.yml   # Full 10-container local topology (DB, NATS, 2 CPs, worker, 5 nodes)
 ```
+
+---
+
+## Quick Start & Running the Stack
+
+### Prerequisites
+
+- Docker Engine & Docker Compose v2+
+- PowerShell 7+ (or Windows PowerShell 5.1) and Python 3.12+ (for local unit tests)
+
+### 1. Start All Services
+
+Build and launch TimescaleDB, NATS JetStream, `control-plane-1`, `control-plane-2`, `netwatch-worker`, and `node-1` through `node-5`:
+
+```powershell
+docker compose up -d --build
+```
+
+Verify all 10 containers are running:
+
+```powershell
+docker compose ps
+```
+
+### 2. Service Endpoints
+
+| Service | Container | Host Port(s) | Purpose |
+| --- | --- | --- | --- |
+| **Control Plane 1 (Primary)** | `control-plane-1` | `http://localhost:8000` | Web UI, REST API, gRPC (`50051` mTLS / `50052` TLS) |
+| **Control Plane 2 (Standby)** | `control-plane-2` | `http://localhost:8001` | Warm HA replica (auto-promotes in `< 5s` on leader loss) |
+| **TimescaleDB (PG 16)** | `timescaledb` | `localhost:5432` | Bitemporal topology, hypertables, `leader_epoch`, `audit_log` |
+| **NATS JetStream** | `nats-server-1` | `4222` (client), `8222` (HTTP) | `TELEMETRY` stream (`telemetry.>`) |
+| **Monitored Nodes (×5)** | `node-1` .. `node-5` | *None (outbound-only)* | Dual-homed on `MGMT_NET` (`eth0`) and `DATA_NET` (`eth1`) |
+
+---
+
+## Using the Application
+
+### 1. Web Console
+
+Open **http://localhost:8000** in your browser to access the NetWatch Console:
+
+- **Live Topology Graph:** Displays declared links (dashed grey), observed healthy links (solid), and drift/degraded links (red), polling automatically every few seconds.
+- **Time-Travel Slider:** Scrub backward in time (`?at=` and `?known_at=`) to reconstruct historical network states.
+- **Operator Actions:** Trigger A → B path traces, inspect drift alerts, approve/reject recommendations, or revoke compromised nodes (all writes are recorded in the append-only `audit_log`).
+
+### 2. REST API Quick Examples (PowerShell)
+
+**Obtain a JWT token (`viewer` or `operator` role):**
+
+```powershell
+$auth = Invoke-RestMethod -Method Post "http://localhost:8000/auth/token" `
+  -ContentType "application/json" `
+  -Body '{"subject":"local-admin","role":"operator"}'
+$headers = @{ Authorization = "Bearer $($auth.access_token)" }
+```
+
+**Query live topology (declared vs. observed links):**
+
+```powershell
+Invoke-RestMethod "http://localhost:8000/topology" -Headers $headers | ConvertTo-Json -Depth 4
+```
+
+**Query point-in-time historical topology (`at`):**
+
+```powershell
+$past = (Get-Date).AddMinutes(-5).ToUniversalTime().ToString("o")
+Invoke-RestMethod "http://localhost:8000/topology?at=$([uri]::EscapeDataString($past))" -Headers $headers
+```
+
+**Trigger an asynchronous A → B path trace (`202 Accepted` + poll):**
+
+```powershell
+$trace = Invoke-RestMethod -Method Post "http://localhost:8000/paths/trace" `
+  -Headers $headers -ContentType "application/json" `
+  -Body '{"src_node_id":"node-1","dst_node_id":"node-4"}'
+Start-Sleep -Seconds 3
+Invoke-RestMethod "http://localhost:8000/paths/trace/$($trace.trace_id)" -Headers $headers
+```
+
+---
+
+## Verification & Testing
+
+### End-to-End Fault Injection & Lease Eviction
+
+Runs an automated test that stops `node-1`, verifies packet loss detection and `LeaseManager` temporal link closure (`≤ 13s`), and restarts `node-1` to confirm automatic link recovery:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\verify_fault_injection.ps1
+```
+
+### Unit Tests
+
+```powershell
+pytest -v
+```
+
+### Key Database Invariants (Developer Note)
+
+- **Unbounded Temporal Ranges:** Open rows in `topology_links` MUST use `tstzrange(NOW(), NULL, '[)')` (not `'infinity'`), so PostgreSQL `upper_inf(valid_during)` evaluates to `true` and satisfies the `no_overlapping_links` GIST exclusion constraint.
+- **Epoch Fencing:** Any control-plane mutation must execute through `elector.fenced_execute(conn, sql, params)` to prevent split-brain writes during leader failover.
+
+---
+
+## Implementation Checklist
+
+### Phase 1 · Playground & Contracts — Complete
+
+- [x] **1.1** Git repository, folder skeleton, `.gitignore`, `.env.example`, and `requirements.txt`
+- [x] **1.2** Root CA, server certificates (control-plane & NATS), and 24h node client certificates (`CN = node_id`)
+- [x] **1.3** Protobuf definitions (`Enroll`, `Heartbeat`, `ProbeResult`, `Ack`), `ControlService` RPCs, and generated Python stubs
+- [x] **1.4** PostgreSQL + TimescaleDB schema (`nodes`, `network_interfaces`, `topology_links` with GIST exclusion, `alerts`, `recommendations`, `node_commands`, `path_traces`, `leader_epoch`, append-only `audit_log`, hypertables)
+- [x] **1.5** Docker Compose dual-network topology (`MGMT_NET` + `DATA_NET`), TimescaleDB (`172.28.0.30`), NATS JetStream, 2 control-plane replicas, and 5 dual-homed nodes
+
+### Phase 2 · Agent & Telemetry — Complete
+
+- [x] **2.1** Circular RAM `RingBuffer` (`1,000` ticks, monotonic `seq_id`, `boot_id`, unit tests)
+- [x] **2.2** Host & interface collector (`/proc` CPU/RAM, `eth1` rx/tx/drop counters, `DATA_NET` neighbors)
+- [x] **2.3** Outbound-only mTLS agent (`Enroll`, 5s `Heartbeat` with zero listening ports, NATS JetStream publisher with `PubAck` draining)
+- [x] **2.4** NATS JetStream batch worker with staging table deduplication (`ON CONFLICT DO NOTHING`)
+- [x] **2.5** NATS outage resilience verified (0 lost ticks, 0 duplicate rows)
+
+### Phase 3 · Control Plane — Complete
+
+- [x] **3.1** PostgreSQL advisory-lock `LeaderElector` with monotonic epochs, `fenced_execute`, and `< 5s` failover
+- [x] **3.2** mTLS/TLS gRPC server (`Enroll` CSR signing, `Heartbeat` + `SKIP LOCKED` command dispatch, `SubmitProbeResult`)
+- [x] **3.3** `LeaseManager` (`DEGRADED > 7.5s`, `UNREACHABLE > 12s`, automatic closure of observed links)
+- [x] **3.4** `TopologyGraphEngine` (Dijkstra shortest path on `admin_cost`, missing/extra link drift diff, `> 2%` packet loss rule)
+- [x] **3.5** `AlertEvaluator` (`PENDING → FIRING` persisted timers, recovery hysteresis, fingerprint deduplication)
+- [x] **3.6** Unit test suite (`LeaseManager`, `TopologyGraphEngine`, `>= 80%` coverage)
+
+### Phase 4 · API, Probes & UI — Complete
+
+- [x] **4.1** FastAPI REST API with JWT RBAC (`viewer`/`operator`), `POST /topology/desired`, bitemporal `GET /topology` (`at=`, `known_at=`), async `POST/GET /paths/trace`, audited node revocation & recommendation approval
+- [x] **4.2** Agent `ActiveProber` (ICMP/peer RTT & packet loss probes reported via `SubmitProbeResult` with `TIMEOUT` handling)
+- [x] **4.3** Cytoscape.js Web UI (`control_plane/ui/`) with declared/observed/drift styling, time-travel slider, live polling, and action controls
+
+### Phase 5 · AI & Benchmarks — Next
+
+- [ ] **5.1** Sandboxed read-only AI diagnostic worker (`/ai/diagnose`, strict JSON schema, citation verification, prompt-injection hardening)
+- [ ] **5.2** Chaos injection (`tc netem` loss/delay) and `iperf3` congestion burst scripts
+- [ ] **5.3** SNMP (`T0`) vs. NetWatch (`T1`) detection latency, overhead, and false-positive benchmarks
+- [ ] **5.4** Wireshark `.pcap` captures and protocol annotations on `MGMT_NET` and `DATA_NET`
+- [ ] **5.5** Final benchmark report & cold-start timing verification (`< 5 min`)
