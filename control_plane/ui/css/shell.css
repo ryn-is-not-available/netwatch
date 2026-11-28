@@ -1,0 +1,58 @@
+/* App shell matching the console mockup: icon rail, centered status pill, floating glass panels
+   over a full-bleed graph, zoom stack and timeline. Loaded after styles.css and overrides its layout. */
+body.shell{display:grid;grid-template-columns:76px 1fr;grid-template-rows:56px 1fr;height:100vh;overflow:hidden;
+  background:radial-gradient(1200px 600px at 60% 30%,#12283b 0%,#0b1621 60%,#08111a 100%)}
+.shell .top{grid-column:1/3;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;padding:0 18px;border-bottom:1px solid rgba(90,176,255,.08);background:rgba(8,17,26,.7)}
+.shell .brand{font-size:18px;margin:0}
+.status-pill{display:flex;align-items:center;gap:10px;padding:5px 14px;border-radius:99px;background:rgba(22,40,58,.75);border:1px solid rgba(90,176,255,.18)}
+.status-pill .status-badge{border:0;background:none;padding:0}
+.status-pill .conn{font-size:13px;color:var(--ink)}
+.live-tag{color:var(--ok);font-weight:600;font-size:13px}.live-tag.warn{color:var(--warn)}
+.account{justify-self:end;display:flex;align-items:center;gap:10px}
+.avatar{min-width:34px;height:34px;padding:0 10px;border-radius:99px;display:grid;place-items:center;font-weight:600;font-size:12px;color:#fff;
+  background:linear-gradient(135deg,#3b8fe0,#2766b0);white-space:nowrap}
+.link-btn{background:none;border:0;color:var(--ink);font-weight:600;padding:4px}
+
+/* left rail (keeps .tabs so panels.js tab switching works unchanged) */
+.shell .rail{grid-row:2;display:flex;flex-direction:column;gap:4px;padding:12px 8px;border:0;border-right:1px solid rgba(90,176,255,.08);background:rgba(8,17,26,.55);overflow:visible}
+.shell .rail button{position:relative;flex:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:10px 4px;border:0;border-radius:10px;
+  background:none;color:var(--mute);font-size:11px;font-weight:500}
+.shell .rail button:hover{color:var(--ink);background:rgba(90,176,255,.06)}
+.shell .rail button[aria-selected=true]{color:var(--accent);background:rgba(90,176,255,.14);border:0}
+.shell .rail svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.shell .rail i{position:absolute;top:4px;right:8px;margin:0;min-width:18px;padding:1px 5px;border-radius:99px;background:#e98a2e;color:#1a1004;font:600 10px var(--mono);font-style:normal}
+
+/* stage: full-bleed graph with floating panels */
+.shell .stage{grid-row:2;position:relative;min-width:0;min-height:0;display:block}
+.shell #cy{position:absolute;inset:0 0 56px 0;background:radial-gradient(rgba(139,163,184,.18) 1px,transparent 1px) 0 0/24px 24px}
+.glass{background:rgba(20,36,52,.8);backdrop-filter:blur(10px);border:1px solid rgba(90,176,255,.16);border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,.35)}
+.toolbar{position:absolute;top:12px;left:12px;z-index:4;padding:10px 12px}
+.toolbar-row{display:flex;align-items:flex-end;gap:12px}
+.group{display:flex;flex-direction:column;gap:5px}.group-label{font-size:12px;color:var(--mute)}
+.controls{display:flex;align-items:center;gap:8px}
+.divider{width:1px;align-self:stretch;background:rgba(90,176,255,.16)}
+.toolbar .legend{position:static;display:flex;gap:16px;margin-top:10px;padding:0;background:none;border:0;font-size:12px}
+.shell button.ai{background:linear-gradient(135deg,rgba(90,110,255,.35),rgba(90,176,255,.25));border-color:rgba(130,140,255,.6)}
+
+.shell .side{position:absolute;top:12px;right:12px;bottom:68px;width:360px;z-index:4;display:flex;flex-direction:column;overflow:hidden}
+.shell .side .trace{border-bottom:1px solid rgba(90,176,255,.12)}
+.shell .side .summary{padding:10px 14px;gap:8px;border-bottom:1px solid rgba(90,176,255,.12)}
+.shell .side .summary .tile{min-width:0;flex:1 1 28%;padding:6px 10px}
+.shell .side .summary .tile-value{font-size:18px}
+.shell .side .summary .updated{flex-basis:100%;margin:0}
+.shell .hint{left:12px;bottom:68px}
+
+.shell .zoom{position:absolute;top:auto;right:384px;bottom:70px;display:flex;flex-direction:column;align-items:flex-end;gap:8px;z-index:4}
+.zoom-stack{display:flex;flex-direction:column;border:1px solid rgba(90,176,255,.2);border-radius:8px;overflow:hidden}
+.zoom-stack button{width:34px;height:32px;padding:0;border:0;border-radius:0;font-size:18px;background:rgba(20,36,52,.9)}
+.zoom-stack button+button{border-top:1px solid rgba(90,176,255,.2)}
+.zoom-row{display:flex;gap:6px}
+
+.shell .timebar{position:absolute;left:0;right:0;bottom:0;height:56px;padding:0 16px;gap:14px;background:rgba(8,17,26,.8);border-top:1px solid rgba(90,176,255,.1)}
+.timeline{position:relative;flex:1;display:flex;align-items:center}
+.timeline input{width:100%;accent-color:var(--accent)}
+.ticks{position:absolute;left:0;right:0;top:-6px;display:flex;justify-content:space-between;pointer-events:none}
+.ticks i{width:1px;height:6px;background:rgba(139,163,184,.45)}
+
+@media(max-width:1000px){.shell .side{width:300px}.shell .zoom{right:324px}}
+@media(max-width:760px){body.shell{grid-template-columns:60px 1fr}.shell .side{top:auto;left:8px;right:8px;width:auto;height:42%}.shell .toolbar{right:8px}.toolbar-row{flex-wrap:wrap}.shell .zoom{display:none}.status-pill .conn{display:none}}

@@ -18,12 +18,14 @@ export function initGraph(onSelect) {
         "border-width": 3, "border-color": "#0f1b26" } },
       { selector: 'node[status="degraded"],node[status="enrolled"]', style: { "background-color": C.warn } },
       { selector: 'node[status="offline"],node[status="revoked"]', style: { "background-color": C.bad } },
-      { selector: "node:selected", style: { "border-color": C.acc, "border-width": 4 } },
+      { selector: "node:selected", style: { "border-color": C.acc, "border-width": 4,
+        "underlay-color": C.acc, "underlay-opacity": 0.3, "underlay-padding": 8, "underlay-shape": "ellipse" } },
       { selector: "edge", style: { width: 2, "line-color": C.line, "curve-style": "straight", opacity: 0.85 } },
       { selector: "edge.degraded", style: { "line-color": C.warn, width: 3.5, opacity: 1 } },
       { selector: "edge.missing", style: { "line-color": C.bad, "line-style": "dashed", width: 3, opacity: 1 } },
       { selector: "edge.undeclared", style: { "line-style": "dashed", "line-color": C.mute, opacity: 0.6 } },
-      { selector: "edge.traced", style: { "line-color": C.acc, width: 5, opacity: 1, "z-index": 10 } },
+      { selector: "edge.traced", style: { "line-color": C.acc, width: 5, opacity: 1, "z-index": 10,
+        "underlay-color": C.acc, "underlay-opacity": 0.35, "underlay-padding": 6 } },
       { selector: "edge:active, edge.hover", style: { width: 5, opacity: 1, "overlay-opacity": 0 } },
     ],
   });
@@ -35,6 +37,9 @@ export function initGraph(onSelect) {
   cy.on("mouseover", "node", () => ($("cy").style.cursor = "pointer"));
   cy.on("mouseout", "node", () => ($("cy").style.cursor = ""));
   $("fit").onclick = () => cy.fit(undefined, 50);
+  const zoomBy = f => cy.zoom({ level: cy.zoom() * f, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
+  $("zoomIn").onclick = () => zoomBy(1.2);
+  $("zoomOut").onclick = () => zoomBy(1 / 1.2);
   $("relayout").onclick = () => layout();
 }
 const layout = () => cy.layout({ name: cy.nodes().length > 8 ? "cose" : "circle", padding: 60, animate: false }).run();

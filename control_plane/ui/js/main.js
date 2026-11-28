@@ -98,6 +98,7 @@ function tickUpdated() {
 }
 function setLive(v, offset = 0) {
   $("liveBtn").hidden = v;
+  $("knownLabel").hidden = v; // only meaningful when looking at history
   live = v; at = v ? null : new Date(Date.now() + offset * 6e4).toISOString();
   $("slider").value = offset;
   $("timeLabel").textContent = v ? "Now" : agoLabel(-offset);

@@ -171,6 +171,7 @@ export function renderPanels(d, userRole, username) {
   $("n-drift").textContent = d.drift.length;
   $("n-recs").textContent = d.recs.filter(isPending).length;
   $("n-alerts").textContent = d.alerts.filter(a => a.status !== "resolved").length;
+  ["n-drift", "n-recs", "n-alerts"].forEach(id => ($(id).hidden = $(id).textContent === "0")); // no "0" badges
   $("usersTab").hidden = !can("admin");
   if (PASSIVE.has(tab)) $("panel").innerHTML = views[tab]();
   if (tab === "node") {
