@@ -4,8 +4,9 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends iproute2 iputils-ping traceroute && \
     rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir grpcio protobuf cryptography nats-py
+COPY requirements/agent.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
 WORKDIR /app
 
-CMD ["python","-m", "agent.main"]
+CMD ["python", "-m", "agent.main"]

@@ -12,6 +12,7 @@ import logging
 import time
 import grpc
 import json
+import os
 
 
 logger = logging.getLogger("netwatch.agent.heartbeat")
@@ -21,6 +22,8 @@ logger = logging.getLogger("netwatch.agent.heartbeat")
 HEARTBEAT_RPC_TIMEOUT_S = 2.0
 # Retry backoff after a failed tick (e.g. no leader yet during a failover), capped at the interval.
 FAILED_TICK_RETRY_S = (0.5, 1.0, 2.0, 4.0)
+# Touched after every accepted heartbeat; the container healthcheck checks its age.
+HEALTH_FILE = Path(os.environ.get("AGENT_HEALTH_FILE", "/tmp/netwatch-agent.health"))
 
 class HeartBeat:
     
@@ -132,6 +135,10 @@ class HeartBeat:
                 try:
                     ack = self.heartbeatClient()
                     consecutive_failures = 0
+                    try:
+                        HEALTH_FILE.touch()
+                    except OSError as exc:
+                        logger.debug("Could not touch health file %s: %s", HEALTH_FILE, exc)
                     if self._on_command and ack.message.startswith("{"):
                         try:
                             data = json.loads(ack.message)

@@ -29,6 +29,7 @@ certs/public/
 *.key
 .env
 .env.*
+!.env.example
 
 # Packet captures & logs
 *.pcap

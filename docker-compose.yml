@@ -12,6 +12,7 @@ x-control-plane-base: &control-plane-base
     NATS_CONTROL_PLANE_PASSWORD: ${NATS_CONTROL_PLANE_PASSWORD:-dev_cp_pass}
     NATS_URL: nats://control_plane:${NATS_CONTROL_PLANE_PASSWORD:-dev_cp_pass}@${NATS_HOST:-172.28.0.31}:${NATS_PORT:-4222}
     JOIN_TOKEN: ${JOIN_TOKEN:-netwatch-dev-join-token-2026}
+    JWT_SECRET: ${JWT_SECRET:-netwatch-dev-jwt-secret-2026}
   volumes:
     - ./certs:/app/certs:ro
     - ./agent:/app/agent:ro
@@ -25,8 +26,9 @@ x-control-plane-base: &control-plane-base
     nats:
       condition: service_healthy
   healthcheck:
-    test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
-    interval: 10s
+    # Healthy once the REST API answers; both leader and standby report 200.
+    test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+    interval: 5s
     timeout: 3s
     retries: 3
     start_period: 30s
@@ -61,11 +63,13 @@ x-node-base: &node-base
     - ./agent:/app/agent:ro
     - ./shared:/app/shared:ro
   healthcheck:
-    test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
-    interval: 10s
+    # Healthy while the control plane keeps accepting heartbeats (file touched on each Ack).
+    # A revoked or partitioned node turns unhealthy.
+    test: ["CMD", "python", "-c", "import os, sys, time; sys.exit(0 if time.time() - os.path.getmtime('/tmp/netwatch-agent.health') < 20 else 1)"]
+    interval: 5s
     timeout: 3s
     retries: 3
-    start_period: 15s
+    start_period: 30s
 
 services:
   # One-shot PKI bootstrap: creates the CA and server certs on first run (kept on later runs)
@@ -158,6 +162,7 @@ services:
       NATS_CONTROL_PLANE_PASSWORD: ${NATS_CONTROL_PLANE_PASSWORD:-dev_cp_pass}
       NATS_URL: nats://control_plane:${NATS_CONTROL_PLANE_PASSWORD:-dev_cp_pass}@${NATS_HOST:-172.28.0.31}:${NATS_PORT:-4222}
       JOIN_TOKEN: ${JOIN_TOKEN:-netwatch-dev-join-token-2026}
+      JWT_SECRET: ${JWT_SECRET:-netwatch-dev-jwt-secret-2026}
       INSTANCE_ID: control-plane-1
     ports: ["8000:8000"]
     networks:
@@ -178,6 +183,7 @@ services:
       NATS_CONTROL_PLANE_PASSWORD: ${NATS_CONTROL_PLANE_PASSWORD:-dev_cp_pass}
       NATS_URL: nats://control_plane:${NATS_CONTROL_PLANE_PASSWORD:-dev_cp_pass}@${NATS_HOST:-172.28.0.31}:${NATS_PORT:-4222}
       JOIN_TOKEN: ${JOIN_TOKEN:-netwatch-dev-join-token-2026}
+      JWT_SECRET: ${JWT_SECRET:-netwatch-dev-jwt-secret-2026}
       INSTANCE_ID: control-plane-2
     ports: ["8001:8000"]
     networks:
@@ -197,6 +203,13 @@ services:
     volumes:
       - ./worker:/app/worker:ro
       - ./shared:/app/shared:ro
+    healthcheck:
+      # Healthy while the ingest loop runs with a usable DB connection.
+      test: ["CMD", "python", "-c", "import os, sys, time; sys.exit(0 if time.time() - os.path.getmtime('/tmp/netwatch-worker.health') < 20 else 1)"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
     depends_on:
       timescaledb:
         condition: service_healthy

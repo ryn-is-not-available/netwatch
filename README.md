@@ -42,6 +42,14 @@ netwatch/
 - Docker Engine & Docker Compose v2+
 - PowerShell 7+ (or Windows PowerShell 5.1) and Python 3.12+ (for local unit tests)
 
+**Configuration (optional):** every setting has a dev default. To override passwords, the join token or the JWT secret, copy `.env.example` to `.env` and edit it; Compose reads `.env` automatically.
+
+```powershell
+Copy-Item .env.example .env
+```
+
+**Health:** each container has a real healthcheck. Control planes report healthy when the REST API answers. Nodes are healthy while the control plane accepts their heartbeats, so a revoked or partitioned node shows as `unhealthy`. The worker is healthy while its ingest loop runs with a working database connection.
+
 ### 1. Start All Services
 
 Build and launch TimescaleDB, NATS JetStream, `control-plane-1`, `control-plane-2`, `netwatch-worker`, and `node-1` through `node-5`:
@@ -139,9 +147,18 @@ powershell -ExecutionPolicy Bypass -File .\scripts\verify_fault_injection.ps1
 
 ### Unit Tests
 
+Runtime dependencies are pinned per service in `requirements/` (the Dockerfiles install these); `requirements.txt` pulls in all of them plus the test tools:
+
+```powershell
+pip install -r requirements.txt
+```
 ```powershell
 pytest -v
 ```
+
+### Continuous Integration
+
+`.github/workflows/ci.yml` runs on every push and pull request. It runs the unit tests with coverage, then boots the full stack on the runner, waits for all 5 nodes to be healthy, checks every container's healthcheck, and runs the fault-injection script.
 
 ### Key Database Invariants (Developer Note)
 

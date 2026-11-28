@@ -1,6 +1,7 @@
 FROM python:3.12-slim
 
-RUN pip install --no-cache-dir grpcio protobuf cryptography nats-py psycopg[binary] fastapi uvicorn[standard] PyJWT
+COPY requirements/control-plane.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
 WORKDIR /app
 

@@ -17,6 +17,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger("netwatch.worker")
 
+# Touched on every loop iteration while the DB connection is usable; the container
+# healthcheck checks its age, so a worker stuck reconnecting shows as unhealthy.
+HEALTH_FILE = os.environ.get("WORKER_HEALTH_FILE", "/tmp/netwatch-worker.health")
+
+
+def _touch_health() -> None:
+    try:
+        with open(HEALTH_FILE, "a"):
+            os.utime(HEALTH_FILE, None)
+    except OSError as exc:
+        logger.debug("Could not touch health file %s: %s", HEALTH_FILE, exc)
+
 INSERT_NODE_METRICS_SQL = """
 INSERT INTO node_metrics (
     time,
@@ -120,6 +132,7 @@ async def run_worker(stop_event: asyncio.Event) -> None:
 
     try:
         while not stop_event.is_set():
+            _touch_health()
             try:
                 msgs = await psub.fetch(batch=100, timeout=1.0)
             except NatsTimeoutError:
