@@ -8,6 +8,9 @@ NetWatch monitors distributed infrastructure across isolated management (`MGMT_N
 
 ### Core Architecture
 
+See **[docs/architecture.md](docs/architecture.md)** for the architecture diagram, the addressing plan and the list of indicators (planning S1).
+
+
 - **Control Plane (`control_plane/`):** Two active-passive FastAPI + gRPC replicas (`control-plane-1` on `:8000`, `control-plane-2` on `:8001`) using PostgreSQL advisory-lock leader election (`leader_epoch`) and fenced database writes (`elector.fenced_execute`).
 - **Node Agents (`agent/`):** Outbound-only mTLS gRPC heartbeats (every 5s). Each heartbeat Ack carries probe commands and the current **peer list** (every other live node's `DATA_NET` address, so nodes need no hard-coded peers). The agent also runs ICMP peer probes (`ActiveProber`), collects host and per-interface metrics from `/proc` and `/sys` (name, MAC, IPs, oper state, bytes/errors/drops), and keeps a 1,000-tick in-memory ring buffer so no telemetry is lost during a NATS outage.
 - **Ingestion & Bitemporal Storage (`worker/`, `db/`):** NATS JetStream (`TELEMETRY` stream) feeding a deduplicating batch worker (`boot_id`, `seq_id`) into PostgreSQL 16 + TimescaleDB hypertables with non-overlapping bitemporal `tstzrange` intervals (`valid_during`, `recorded_during`).
