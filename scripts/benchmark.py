@@ -70,9 +70,10 @@ def snmp_start(interval: float) -> dict[str, str]:
     for node in NODES:
         _, ip = mgmt_ip(node)
         ips[node] = ip
+        # snmpd runs permanently on every node (snmp/snmpd.conf); start one only on an older stack.
         chaos.docker("exec", node, "sh", "-c",
-                     "printf 'rocommunity public\\nagentAddress udp:161\\n' > /tmp/snmpd.conf && "
-                     "snmpd -C -c /tmp/snmpd.conf -p /tmp/snmpd.pid -Lo >/dev/null 2>&1")
+                     "[ -f /tmp/snmpd.pid ] && kill -0 $(cat /tmp/snmpd.pid) 2>/dev/null || "
+                     "snmpd -C -c /etc/netwatch/snmpd.conf -p /tmp/snmpd.pid -Lf /dev/null")
     subprocess.run(["docker", "rm", "-f", POLLER], capture_output=True)
     chaos.docker("run", "-d", "--name", POLLER, "--network", "mgmt_net", "--entrypoint", "python",
                  "netwatch-agent:latest", "-u", "-c", POLLER_CODE, str(interval), *ips.values())
@@ -81,8 +82,7 @@ def snmp_start(interval: float) -> dict[str, str]:
 
 def snmp_stop() -> None:
     subprocess.run(["docker", "rm", "-f", POLLER], capture_output=True)
-    for node in NODES:
-        chaos.docker("exec", node, "sh", "-c", "[ -f /tmp/snmpd.pid ] && kill $(cat /tmp/snmpd.pid); rm -f /tmp/snmpd.pid", check=False)
+    # snmpd is part of every node now (planning S2): leave it running.
 
 
 def first_failure(ip: str, after: float) -> float | None:

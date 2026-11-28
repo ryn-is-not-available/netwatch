@@ -67,6 +67,9 @@ x-node-base: &node-base
     - ./certs/client.py:/app/certs/client.py:ro
     - ./agent:/app/agent:ro
     - ./shared:/app/shared:ro
+    - ./snmp/snmpd.conf:/etc/netwatch/snmpd.conf:ro
+  # snmpd (read-only, MGMT_NET only: see snmp/snmpd.conf) daemonizes, then the agent runs as PID 1's child.
+  command: ["sh", "-c", "snmpd -C -c /etc/netwatch/snmpd.conf -p /tmp/snmpd.pid -Lf /dev/null && exec python -m agent.main"]
   healthcheck:
     # Healthy while the control plane keeps accepting heartbeats (file touched on each Ack).
     # A revoked or partitioned node turns unhealthy.

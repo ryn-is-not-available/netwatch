@@ -105,6 +105,16 @@ Open **http://localhost:8000** (or **:8001**, either replica works) and sign in.
 - **Fixes:** *Diagnose drift* creates recommendations that carry an action. *Apply* runs it: it declares an undeclared observed link, or starts an evidence trace for a missing or lossy one. The result is recorded in the audit log.
 - **Users tab (admin):** create users, change roles, and disable or enable accounts.
 
+### SNMP agent on every node (planning S2)
+
+Every node runs a permanent read-only `snmpd` (SNMPv2c, community `public`) next to the NetWatch agent. It is the classic monitoring baseline that the observability stack is compared with. Since it's the nodes' only listening service, it's locked down (`snmp/snmpd.conf`):
+- it answers only requests coming from `MGMT_NET` (`172.28.0.0/24`), never from `DATA_NET`;
+- it exposes only the system, interface (IF-MIB, 64-bit counters) and UCD CPU/memory subtrees.
+
+```powershell
+docker exec node-2 snmpwalk -v2c -c public 172.28.0.40 1.3.6.1.2.1.31.1.1.1.1
+```
+
 ### AI diagnosis
 
 **AI diagnose** (operator) asks Google Gemini (`gemini-3.5-flash-lite` by default, set with `AI_MODEL`) to explain the network's current state. Each finding comes back as a pending fix with an `AI` badge and the evidence it cites.
