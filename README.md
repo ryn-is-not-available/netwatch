@@ -27,7 +27,8 @@ netwatch/
 │   └── ui/              # Interactive Cytoscape.js topology & time-travel web UI
 ├── agent/               # Outbound node agent, RingBuffer, /proc collector, ActiveProber
 ├── worker/              # NATS JetStream consumer & TimescaleDB staging upsert worker
-├── scripts/             # Cert generation, proto codegen, and fault-injection verification
+├── certs/               # PKI helpers (CA, server certs, node CSR signing); generated keys are gitignored
+├── scripts/             # PKI bootstrap (gen_certs.py), proto codegen, and fault-injection verification
 ├── tests/               # Unit and integration test suite
 └── docker-compose.yml   # Full 10-container local topology (DB, NATS, 2 CPs, worker, 5 nodes)
 ```
@@ -49,10 +50,22 @@ Build and launch TimescaleDB, NATS JetStream, `control-plane-1`, `control-plane-
 docker compose up -d --build
 ```
 
-Verify all 10 containers are running:
+On the first run, the one-shot `cert-init` container creates the PKI in `certs/` (Root CA, control-plane and NATS server certificates, and `certs/public/ca.crt`) before the control planes start. Later runs keep the existing files. Generated keys and certificates are gitignored and never committed.
+
+To create the PKI without Docker (needs `pip install cryptography`):
 
 ```powershell
-docker compose ps
+python scripts/gen_certs.py
+```
+
+To rotate the PKI, stop the stack, delete the generated `*.key`/`*.crt` files and `certs/public/`, and start it again.
+
+> **Key isolation:** only the control planes mount `certs/` (they need `ca.key` to sign node CSRs). Nodes mount `certs/public/ca.crt` at `/app/pki/ca.crt` plus the CSR helper modules, so a compromised node cannot mint certificates for other node IDs.
+
+Verify all 10 long-running containers are up (`cert-init` shows as exited with code 0):
+
+```powershell
+docker compose ps -a
 ```
 
 ### 2. Service Endpoints
@@ -75,11 +88,12 @@ Open **http://localhost:8000** in your browser to access the NetWatch Console:
 
 - **Live Topology Graph:** Displays declared links (dashed grey), observed healthy links (solid), and drift/degraded links (red), polling automatically every few seconds.
 - **Time-Travel Slider:** Scrub backward in time (`?at=` and `?known_at=`) to reconstruct historical network states.
-- **Operator Actions:** Trigger A → B path traces, inspect drift alerts, approve/reject recommendations, or revoke compromised nodes (all writes are recorded in the append-only `audit_log`).
+- **Operator Actions:** Trigger A → B path traces, inspect drift alerts, apply/dismiss recommendations, or revoke compromised nodes (`admin` role; all writes are recorded in the append-only `audit_log`). A revoked node is refused on heartbeat, probe submission and re-enrollment, and its links are closed.
+- **Writes go to the leader:** only the active leader accepts writes. The standby replica serves reads but answers writes with `503` (check `GET /health` for `is_leader`), so after a failover use the other port.
 
 ### 2. REST API Quick Examples (PowerShell)
 
-**Obtain a JWT token (`viewer` or `operator` role):**
+**Obtain a JWT token (`viewer`, `operator` or `admin` role; dev only, the endpoint does not check credentials):**
 
 ```powershell
 $auth = Invoke-RestMethod -Method Post "http://localhost:8000/auth/token" `
@@ -117,7 +131,7 @@ Invoke-RestMethod "http://localhost:8000/paths/trace/$($trace.trace_id)" -Header
 
 ### End-to-End Fault Injection & Lease Eviction
 
-Runs an automated test that stops `node-1`, verifies packet loss detection and `LeaseManager` temporal link closure (`≤ 13s`), and restarts `node-1` to confirm automatic link recovery:
+Stops `node-1` and checks that it is marked offline, that `LeaseManager` closes all its links within 14s and they stay closed (peers probing a dead node must not re-open them), and that exactly one `Node unreachable` alert is raised for it. It then restarts `node-1` and checks that it is healthy again, its links are restored and the alert is resolved. It exits with code 1 if any check fails. Point `-BaseUrl` at the current leader (`http://localhost:8001` after a failover):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\verify_fault_injection.ps1
@@ -132,7 +146,9 @@ pytest -v
 ### Key Database Invariants (Developer Note)
 
 - **Unbounded Temporal Ranges:** Open rows in `topology_links` MUST use `tstzrange(NOW(), NULL, '[)')` (not `'infinity'`), so PostgreSQL `upper_inf(valid_during)` evaluates to `true` and satisfies the `no_overlapping_links` GIST exclusion constraint.
-- **Epoch Fencing:** Any control-plane mutation must execute through `elector.fenced_execute(conn, sql, params)` to prevent split-brain writes during leader failover.
+- **Epoch Fencing:** Any control-plane mutation must execute through `elector.fenced_execute(conn, sql, params)` (REST handlers use `_require_leader(conn)`, the same `FOR SHARE` epoch check) to prevent split-brain writes during leader failover.
+- **Takeover Grace:** A newly elected leader waits one full lease (`12s`) before marking nodes degraded or offline, because heartbeats are declined while no leader exists. Agents retry quickly (0.5–4s backoff, 2s RPC deadline) and remember the last control plane that accepted them.
+- **Schema Lives in `db/init.sql`:** Control planes run no DDL at startup (two replicas racing on `CREATE TABLE IF NOT EXISTS` crashes one of them). Changing the schema means editing `init.sql` and recreating the database volume (`docker compose down -v`).
 
 ---
 
