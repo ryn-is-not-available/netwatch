@@ -58,6 +58,16 @@ class ActiveProber:
         self._config = config
         self._peer_ips = dict(peer_ips or DEFAULT_PEER_IPS)
         self._probe_interval_s = probe_interval_s
+        # Last control plane that accepted a probe result; tried first (see HeartBeat).
+        self._preferred_addr: str | None = None
+
+    def _ordered_addrs(self) -> list[str]:
+        addrs = list(self._config.cp_addrs)
+        preferred = self._preferred_addr
+        if preferred in addrs:
+            addrs.remove(preferred)
+            addrs.insert(0, preferred)
+        return addrs
 
     def run_icmp_probe(
         self,
@@ -181,12 +191,13 @@ class ActiveProber:
             error_message=error_message,
         )
         last_err: Exception | None = None
-        for addr in self._config.cp_addrs:
+        for addr in self._ordered_addrs():
             try:
                 with grpc.secure_channel(addr, creds) as channel:
                     stub = netwatch_pb2_grpc.ControlServiceStub(channel)
-                    ack = stub.SubmitProbeResult(msg, timeout=5.0)
+                    ack = stub.SubmitProbeResult(msg, timeout=2.0)
                 if ack.ok:
+                    self._preferred_addr = addr
                     return
             except grpc.RpcError as exc:
                 last_err = exc

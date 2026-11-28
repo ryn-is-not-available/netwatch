@@ -40,15 +40,23 @@ def main() -> None:
     collector = MetricsCollector(data_ip=cfg.data_ip)
     ring_buffer = RingBuffer(capacity=cfg.buffer_capacity)
     prober = ActiveProber(cfg)
-    heartbeat = HeartBeat(
-            cfg,
-            collector,
-            on_command=lambda cmd: (
+    def _dispatch_command(cmd: dict) -> None:
+        # Traces take up to ~16s against an unreachable peer. Running them on the heartbeat
+        # thread would stall heartbeats past the 7.5s/12s lease thresholds and get this node
+        # marked degraded/offline, so each command runs on its own short-lived thread.
+        if cmd.get("command_type") != "run_trace":
+            logger.warning("Ignoring unsupported command type %r", cmd.get("command_type"))
+            return
+
+        def _run() -> None:
+            try:
                 prober.execute_trace_command(cmd.get("payload", {}))
-                if cmd.get("command_type") == "run_trace"
-                else None
-            ),
-        )
+            except Exception as exc:
+                logger.error("Trace command %s failed: %s", cmd.get("command_id"), exc)
+
+        threading.Thread(target=_run, name=f"cmd-{cmd.get('command_id')}", daemon=True).start()
+
+    heartbeat = HeartBeat(cfg, collector, on_command=_dispatch_command)
     publisher = TelemetryPublisher(cfg, collector, ring_buffer)
 
     threads = [

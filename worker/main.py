@@ -71,14 +71,29 @@ def _flush_batch_to_db(conn: psycopg.Connection[Any], rows: list[tuple[Any, ...]
     
 
 
+async def _connect_db(db_dsn: str, stop_event: asyncio.Event) -> psycopg.Connection[Any]:
+    """Connects to TimescaleDB, retrying until it succeeds (or shutdown is requested)."""
+    delay_s = 1.0
+    while True:
+        try:
+            conn = await asyncio.to_thread(psycopg.connect, db_dsn)
+            logger.info("Connected to TimescaleDB")
+            return conn
+        except psycopg.OperationalError as exc:
+            if stop_event.is_set():
+                raise
+            logger.warning("TimescaleDB unavailable (%s); retrying in %.0fs", exc, delay_s)
+            await asyncio.sleep(delay_s)
+            delay_s = min(delay_s * 2, 10.0)
+
+
 async def run_worker(stop_event: asyncio.Event) -> None:
     db_dsn = (os.environ.get("DB_DSN") or "").strip()
     nats_url = (os.environ.get("NATS_URL") or "").strip()
     if not db_dsn or not nats_url:
         raise RuntimeError("DB_DSN and NATS_URL environment variables are required")
 
-    conn = await asyncio.to_thread(psycopg.connect, db_dsn)
-    logger.info("Connected to TimescaleDB")
+    conn = await _connect_db(db_dsn, stop_event)
 
     nc = await nats.connect(
         servers=[nats_url],
@@ -125,15 +140,19 @@ async def run_worker(stop_event: asyncio.Event) -> None:
 
             try:
                 inserted = await asyncio.to_thread(_flush_batch_to_db, conn, rows)
-                # TODO 3: Now that `conn.commit()` succeeded, iterate over `valid_msgs`
-                # and `await msg.ack()` on each message so JetStream advances the consumer cursor!
+                # Ack only after the commit succeeded so JetStream advances the consumer cursor.
                 for msg in valid_msgs:
                     await msg.ack()
 
                 logger.info("Flushed and acked %d telemetry ticks into TimescaleDB", inserted)
             except Exception as exc:
                 logger.error("DB batch flush failed (leaving %d msgs unacked for redelivery): %s", len(valid_msgs), exc)
-                await asyncio.sleep(1.0)
+                if conn.closed or conn.broken:
+                    # A dead connection never recovers by itself (e.g. after a DB restart).
+                    await asyncio.to_thread(conn.close)
+                    conn = await _connect_db(db_dsn, stop_event)
+                else:
+                    await asyncio.sleep(1.0)
     finally:
         await nc.drain()
         await asyncio.to_thread(conn.close)
