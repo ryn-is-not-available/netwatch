@@ -67,6 +67,17 @@ CREATE TABLE topology_links (
 
 CREATE INDEX idx_topology_links_temporal ON topology_links USING gist (src_node_id,dst_node_id,valid_during);
 
+-- Operator-declared intent (POST /topology/desired), diffed against topology_links for drift.
+CREATE TABLE desired_topology_links (
+    src_node_id VARCHAR(255) NOT NULL REFERENCES nodes(node_id) ON DELETE CASCADE,
+    dst_node_id VARCHAR(255) NOT NULL REFERENCES nodes(node_id) ON DELETE CASCADE,
+    admin_cost NUMERIC(10, 2) NOT NULL DEFAULT 1.0,
+    expected_latency_ms NUMERIC(10, 2) NOT NULL DEFAULT 5.0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (src_node_id, dst_node_id),
+    CONSTRAINT no_self_desired_links CHECK (src_node_id <> dst_node_id)
+);
+
 -- Layer 3
 
 CREATE TABLE alerts (
@@ -83,6 +94,16 @@ CREATE TABLE alerts (
 
 CREATE INDEX idx_alerts_status ON alerts (status);
 CREATE INDEX idx_alerts_severity ON alerts (severity);
+
+-- AlertEvaluator state: persisted PENDING/FIRING timers keyed by rule fingerprint.
+CREATE TABLE alert_timers (
+    fingerprint VARCHAR(255) PRIMARY KEY,
+    state VARCHAR(32) NOT NULL CHECK (state IN ('PENDING', 'FIRING')),
+    pending_since TIMESTAMPTZ NOT NULL,
+    fired_at TIMESTAMPTZ,
+    alert_id UUID REFERENCES alerts(alert_id) ON DELETE SET NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 
 CREATE TABLE recommendations (
     recommendation_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
