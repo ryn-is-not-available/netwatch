@@ -3,19 +3,23 @@ import logging
 import os
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote
+from urllib.parse import unquote, urlparse
+import urllib.error
+import urllib.request
 import uuid
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse,FileResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 import jwt
 import psycopg
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from control_plane.adapters.elector import LeaderElector
+from control_plane.domain.auth import check_credentials, hash_password, load_user
 from control_plane.domain.link_history import CLOSE_FOR_NODE_SQL
 from control_plane.domain.graph_engine import (
     DeclaredLink,
@@ -30,9 +34,28 @@ UI_DIR = Path(__file__).resolve().parent.parent / "ui"
 ROLE_RANK = {"viewer": 1, "operator": 2, "admin": 3}
 bearer_scheme = HTTPBearer(auto_error=False)
 
-class TokenRequest(BaseModel):
-    subject: str = Field(default="dev-operator", min_length=1)
-    role: str = Field(default="admin", pattern="^(viewer|operator|admin)$")
+TOKEN_TTL = timedelta(hours=8)
+FORWARDED_HEADER = "x-netwatch-forwarded"
+WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+# Writes that any replica may serve (they do not mutate control state).
+LOCAL_WRITE_PATHS = {"/auth/token"}
+
+
+class LoginRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=256)
+
+
+class UserCreate(BaseModel):
+    username: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.@-]+$")
+    password: str = Field(min_length=8, max_length=256)
+    role: str = Field(pattern="^(viewer|operator|admin)$")
+
+
+class UserPatch(BaseModel):
+    role: str | None = Field(default=None, pattern="^(viewer|operator|admin)$")
+    password: str | None = Field(default=None, min_length=8, max_length=256)
+    disabled: bool | None = None
 
 
 class DesiredLinkIn(BaseModel):
@@ -56,14 +79,8 @@ class RecommendationPatchRequest(BaseModel):
     status: str = Field(pattern="^(applied|dismissed)$")
 
 
-def _client_ip(request: Request) -> str:
-    if request.client and request.client.host:
-        return unquote(request.client.host)
-    return "127.0.0.1"
-
-
 def create_rest_app(db_dsn: str, elector: LeaderElector) -> FastAPI:
-    jwt_secret = os.environ.get("JWT_SECRET", "netwatch-dev-jwt-secret-2026")
+    jwt_secret = os.environ.get("JWT_SECRET", "netwatch-dev-jwt-secret-2026-change-me-32b")
     graph_engine = TopologyGraphEngine()
     # Schema (incl. desired_topology_links) lives in db/init.sql. No DDL here: both
     # control-plane replicas start together and concurrent CREATE ... IF NOT EXISTS races.
@@ -80,6 +97,18 @@ def create_rest_app(db_dsn: str, elector: LeaderElector) -> FastAPI:
     @app.get("/", include_in_schema=False)
     def index():
         return FileResponse(UI_DIR / "index.html")
+    peer_rest_url = (os.environ.get("PEER_REST_URL") or "").rstrip("/")
+    peer_host = urlparse(peer_rest_url).hostname if peer_rest_url else None
+
+    def _client_ip(request: Request) -> str:
+        """Caller IP for the audit log. A write forwarded by the standby carries the original
+        client in X-Forwarded-For, trusted only when it really comes from the peer replica."""
+        host = unquote(request.client.host) if request.client and request.client.host else "127.0.0.1"
+        forwarded_for = request.headers.get("x-forwarded-for")
+        if forwarded_for and request.headers.get(FORWARDED_HEADER) and peer_host and host == peer_host:
+            return forwarded_for.split(",")[0].strip()
+        return host
+
     def require_role(min_role: str):
         def _dep(
             creds: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
@@ -97,15 +126,67 @@ def create_rest_app(db_dsn: str, elector: LeaderElector) -> FastAPI:
                     detail=f"Invalid token: {exc}",
                 ) from exc
 
-            role = str(payload.get("role", ""))
+            # The token only proves who the caller is. Their role, and whether they may still
+            # sign in, come from the database, so demotions and disabling apply immediately.
+            with psycopg.connect(db_dsn) as conn:
+                user = load_user(conn, str(payload.get("sub", "")))
+            if user is None or user[2]:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="User no longer exists or is disabled",
+                )
+            role = user[1]
             if ROLE_RANK.get(role, 0) < ROLE_RANK[min_role]:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"Role '{role}' lacks required '{min_role}' permission",
                 )
-            return payload
+            return {**payload, "role": role}
 
         return _dep
+
+    @app.middleware("http")
+    async def forward_writes_to_leader(request: Request, call_next):
+        """A standby forwards state-changing requests to the leader over MGMT_NET, so clients
+        (the UI included) can use either replica. A request is never forwarded twice."""
+        if (
+            request.method not in WRITE_METHODS
+            or request.url.path in LOCAL_WRITE_PATHS
+            or elector.is_leader
+        ):
+            return await call_next(request)
+        if request.headers.get(FORWARDED_HEADER) or not peer_rest_url:
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={"detail": f"{elector.instance_id} is a standby and no leader is reachable; retry shortly"},
+            )
+
+        body = await request.body()
+        target = peer_rest_url + request.url.path + (f"?{request.url.query}" if request.url.query else "")
+        headers = {
+            k: v
+            for k, v in request.headers.items()
+            if k.lower() in ("authorization", "content-type", "accept")
+        }
+        headers[FORWARDED_HEADER] = elector.instance_id
+        headers["X-Forwarded-For"] = _client_ip(request)
+
+        def _forward() -> tuple[int, bytes, str]:
+            req = urllib.request.Request(target, data=body or None, method=request.method, headers=headers)
+            try:
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    return resp.status, resp.read(), resp.headers.get("content-type", "application/json")
+            except urllib.error.HTTPError as err:
+                return err.code, err.read(), err.headers.get("content-type", "application/json")
+
+        try:
+            code, content, ctype = await run_in_threadpool(_forward)
+        except (urllib.error.URLError, OSError) as exc:
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={"detail": f"Leader unreachable from standby {elector.instance_id}: {exc}"},
+            )
+        return Response(content=content, status_code=code, media_type=ctype)
 
     def _parse_uuid(value: str, what: str) -> str:
         try:
@@ -170,19 +251,139 @@ def create_rest_app(db_dsn: str, elector: LeaderElector) -> FastAPI:
         }
 
     @app.post("/auth/token")
-    def issue_token(body: TokenRequest) -> dict[str, str]:
+    def issue_token(body: LoginRequest) -> dict[str, str]:
+        with psycopg.connect(db_dsn) as conn:
+            user = load_user(conn, body.username)
+        if not check_credentials(user[0] if user else None, body.password) or user is None or user[2]:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password")
         now = datetime.now(timezone.utc)
         token = jwt.encode(
             {
-                "sub": body.subject,
-                "role": body.role,
+                "sub": body.username,
+                "role": user[1],
                 "iat": int(now.timestamp()),
-                "exp": int((now + timedelta(hours=12)).timestamp()),
+                "exp": int((now + TOKEN_TTL).timestamp()),
             },
             jwt_secret,
             algorithm="HS256",
         )
-        return {"access_token": token, "token_type": "bearer", "role": body.role}
+        return {"access_token": token, "token_type": "bearer", "role": user[1], "username": body.username}
+
+    @app.get("/auth/me")
+    def whoami(user: dict[str, Any] = Depends(require_role("viewer"))) -> dict[str, Any]:
+        return {"username": user.get("sub"), "role": user.get("role")}
+
+    @app.get("/users")
+    def list_users(_user: dict[str, Any] = Depends(require_role("admin"))) -> list[dict[str, Any]]:
+        with psycopg.connect(db_dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT username, role, disabled, created_at FROM users ORDER BY username;")
+                return [
+                    {"username": r[0], "role": r[1], "disabled": r[2], "created_at": r[3].isoformat()}
+                    for r in cur.fetchall()
+                ]
+
+    @app.post("/users", status_code=status.HTTP_201_CREATED)
+    def create_user(
+        body: UserCreate, request: Request, user: dict[str, Any] = Depends(require_role("admin"))
+    ) -> dict[str, Any]:
+        with psycopg.connect(db_dsn) as conn:
+            _require_leader(conn)
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO users (username, password_hash, role) VALUES (%s, %s, %s) "
+                    "ON CONFLICT (username) DO NOTHING;",
+                    (body.username, hash_password(body.password), body.role),
+                )
+                if cur.rowcount == 0:
+                    raise HTTPException(status_code=409, detail=f"User {body.username!r} already exists")
+            _write_audit(conn, str(user.get("sub")), "CREATE_USER", body.username, {"role": body.role}, _client_ip(request))
+            conn.commit()
+        return {"username": body.username, "role": body.role, "disabled": False}
+
+    @app.patch("/users/{username}")
+    def update_user(
+        username: str, body: UserPatch, request: Request, user: dict[str, Any] = Depends(require_role("admin"))
+    ) -> dict[str, Any]:
+        if username == user.get("sub") and (body.disabled or (body.role and body.role != "admin")):
+            raise HTTPException(status_code=400, detail="Admins cannot disable or demote themselves")
+        sets: list[str] = []
+        params: list[Any] = []
+        changed: dict[str, Any] = {}
+        if body.role is not None:
+            sets.append("role = %s")
+            params.append(body.role)
+            changed["role"] = body.role
+        if body.disabled is not None:
+            sets.append("disabled = %s")
+            params.append(body.disabled)
+            changed["disabled"] = body.disabled
+        if body.password is not None:
+            sets.append("password_hash = %s")
+            params.append(hash_password(body.password))
+            changed["password"] = "changed"
+        if not sets:
+            raise HTTPException(status_code=422, detail="Nothing to update")
+        with psycopg.connect(db_dsn) as conn:
+            _require_leader(conn)
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"UPDATE users SET {', '.join(sets)}, updated_at = NOW() WHERE username = %s "
+                    "RETURNING username, role, disabled;",
+                    (*params, username),
+                )
+                row = cur.fetchone()
+                if row is None:
+                    raise HTTPException(status_code=404, detail="User not found")
+            _write_audit(conn, str(user.get("sub")), "UPDATE_USER", username, changed, _client_ip(request))
+            conn.commit()
+        return {"username": row[0], "role": row[1], "disabled": row[2]}
+
+    @app.post("/nodes/{node_id}/reinstate")
+    def reinstate_node(
+        node_id: str, request: Request, user: dict[str, Any] = Depends(require_role("admin"))
+    ) -> dict[str, Any]:
+        """Lifts a revocation. The node goes to 'offline' and becomes healthy again once it
+        re-enrolls and heartbeats; its links reopen from fresh probes."""
+        with psycopg.connect(db_dsn) as conn:
+            _require_leader(conn)
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE nodes SET health_status = 'offline' WHERE node_id = %s AND health_status = 'revoked' "
+                    "RETURNING node_id;",
+                    (node_id,),
+                )
+                if cur.fetchone() is None:
+                    cur.execute("SELECT 1 FROM nodes WHERE node_id = %s;", (node_id,))
+                    if cur.fetchone() is None:
+                        raise HTTPException(status_code=404, detail="Node not found")
+                    raise HTTPException(status_code=409, detail=f"Node {node_id} is not revoked")
+            _write_audit(conn, str(user.get("sub")), "REINSTATE_NODE", node_id, {}, _client_ip(request))
+            conn.commit()
+        return {"node_id": node_id, "health_status": "offline"}
+
+    @app.post("/alerts/{alert_id}/ack")
+    def acknowledge_alert(
+        alert_id: str, request: Request, user: dict[str, Any] = Depends(require_role("operator"))
+    ) -> dict[str, Any]:
+        alert_id = _parse_uuid(alert_id, "Alert")
+        with psycopg.connect(db_dsn) as conn:
+            _require_leader(conn)
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE alerts SET status = 'acknowledged' WHERE alert_id = %s::uuid AND status = 'new' "
+                    "RETURNING alert_id::text;",
+                    (alert_id,),
+                )
+                if cur.fetchone() is None:
+                    cur.execute("SELECT status FROM alerts WHERE alert_id = %s::uuid;", (alert_id,))
+                    row = cur.fetchone()
+                    if row is None:
+                        raise HTTPException(status_code=404, detail="Alert not found")
+                    raise HTTPException(status_code=409, detail=f"Alert is already {row[0]}")
+            _write_audit(conn, str(user.get("sub")), "ACK_ALERT", alert_id, {}, _client_ip(request))
+            conn.commit()
+        return {"alert_id": alert_id, "status": "acknowledged"}
 
     @app.get("/nodes")
     def list_nodes(_user: dict[str, Any] = Depends(require_role("viewer"))) -> list[dict[str, Any]]:
@@ -655,7 +856,7 @@ def create_rest_app(db_dsn: str, elector: LeaderElector) -> FastAPI:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT log_id::text, actor_id, action_type, target_entity, details, ip_address::text, created_at
+                    SELECT log_id::text, actor_id, action_type, target_entity, details, host(ip_address), created_at
                     FROM audit_log
                     ORDER BY created_at DESC
                     LIMIT 50;

@@ -1,9 +1,9 @@
 import { $, esc, toast } from "./util.js";
-import { api, login, post, patch } from "./api.js";
+import { api, login, logout, post, patch, setUnauthorizedHandler } from "./api.js";
 import { initGraph, renderGraph, traced, nodeCard } from "./graph.js";
 import { initPanels, renderPanels, handlers } from "./panels.js";
 
-let live = true, at = null, busy = false, authed = false;
+let live = true, at = null, busy = false, me = null; // me = {username, role} once signed in
 
 function fillSelects(nodes) {
   const ids = nodes.map(n => n.node_id);
@@ -15,12 +15,33 @@ function fillSelects(nodes) {
   });
 }
 function gate() {
-  const r = $("role").value;
+  const r = me?.role ?? "viewer";
   $("diagBtn").disabled = $("traceBtn").disabled = r === "viewer";
   $("revokeBtn").disabled = r !== "admin";
 }
+function showUser() {
+  $("who").textContent = `${me.username} · ${me.role}`;
+  $("who").hidden = $("logoutBtn").hidden = false;
+}
+function showLogin(message = "") {
+  me = null;
+  $("who").hidden = $("logoutBtn").hidden = true;
+  $("loginErr").textContent = message;
+  $("loginErr").hidden = !message;
+  const dlg = $("loginDlg");
+  if (!dlg.open) dlg.showModal();
+  $("loginUser").focus();
+}
+async function startSession() {
+  try {
+    me = await api("/auth/me");
+  } catch {
+    return showLogin();
+  }
+  showUser(); gate(); await refresh();
+}
 async function refresh() {
-  if (busy || !authed) return; busy = true;
+  if (busy || !me) return; busy = true;
   try {
     const h = await api("/health");
     $("leader").textContent = `${h.instance_id} · ${h.is_leader ? "leader" : "standby"} · epoch ${h.leader_epoch}`;
@@ -28,7 +49,7 @@ async function refresh() {
     const url = !live && at ? `/topology?at=${encodeURIComponent(at)}&known_at=${encodeURIComponent(at)}` : "/topology";
     const [topo, alerts, recs, audit] = await Promise.all([api(url), api("/alerts"), api("/recommendations"), api("/audit")]);
     fillSelects(topo.nodes || []); renderGraph(topo);
-    renderPanels({ drift: topo.drift || [], recs, alerts, audit }, $("role").value !== "viewer");
+    renderPanels({ drift: topo.drift || [], recs, alerts, audit }, me.role !== "viewer");
   } catch (e) { toast(`Refresh failed: ${e.message}`, true); }
   finally { busy = false; }
 }
@@ -73,7 +94,18 @@ $("diagBtn").onclick = () => guard(async () => { const r = await post("/diagnose
 $("revokeBtn").onclick = () => { const n = $("revokeSel").value; if (n && confirm(`Revoke ${n}? It will be cut off from the mesh.`)) guard(() => post(`/nodes/${n}/revoke`), `${n} revoked`); };
 $("slider").oninput = e => +e.target.value === 0 ? setLive(true) : setLive(false, +e.target.value);
 $("liveBtn").onclick = () => setLive(true);
-$("role").onchange = () => guard(async () => { await login($("role").value); gate(); });
+$("loginForm").onsubmit = async e => {
+  e.preventDefault();
+  try {
+    await login($("loginUser").value.trim(), $("loginPass").value);
+    $("loginPass").value = "";
+    $("loginDlg").close();
+    await startSession();
+  } catch (err) { showLogin(err.message); }
+};
+$("loginDlg").addEventListener("cancel", e => e.preventDefault()); // signing in is required
+$("logoutBtn").onclick = () => { logout(); showLogin(); };
+setUnauthorizedHandler(() => showLogin("Your session expired. Please sign in again."));
 document.addEventListener("visibilitychange", () => { if (!document.hidden && live) refresh(); });
 setInterval(() => { if (live && !document.hidden) refresh(); }, 3000);
-(async () => { try { await login("admin"); authed = true; gate(); await refresh(); } catch (e) { toast(`Login failed: ${e.message}`, true); } })();
+startSession();

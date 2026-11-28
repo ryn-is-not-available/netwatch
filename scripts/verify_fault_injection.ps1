@@ -6,7 +6,10 @@ param(
     [string]$BaseUrl = "http://localhost:8000",
     [string]$TargetNode = "node-1",
     [int]$EvictionWaitSeconds = 14,
-    [int]$RecoveryTimeoutSeconds = 40
+    [int]$RecoveryTimeoutSeconds = 40,
+    [string]$Username = "admin",
+    # Defaults to $env:NETWATCH_PASSWORD, then the dev default from docker-compose.yml.
+    [string]$Password = $(if ($env:NETWATCH_PASSWORD) { $env:NETWATCH_PASSWORD } else { "netwatch-admin-dev" })
 )
 
 $ErrorActionPreference = "Stop"
@@ -24,7 +27,7 @@ function Assert-Check([bool]$Ok, [string]$Message) {
 function Get-AuthHeaders {
     $resp = Invoke-RestMethod -Method Post "$BaseUrl/auth/token" `
         -ContentType "application/json" `
-        -Body '{"subject":"verify-script","role":"viewer"}'
+        -Body (@{ username = $Username; password = $Password } | ConvertTo-Json)
     return @{ Authorization = "Bearer $($resp.access_token)" }
 }
 

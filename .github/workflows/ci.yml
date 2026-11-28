@@ -31,7 +31,7 @@ jobs:
       - name: Wait for all 5 nodes to be healthy
         run: |
           token=$(curl -fsS --retry 30 --retry-delay 3 --retry-all-errors -X POST localhost:8000/auth/token \
-            -H 'Content-Type: application/json' -d '{"subject":"ci","role":"viewer"}' \
+            -H 'Content-Type: application/json' -d '{"username":"admin","password":"netwatch-admin-dev"}' \
             | python3 -c 'import sys, json; print(json.load(sys.stdin)["access_token"])')
           for i in $(seq 1 60); do
             healthy=$(curl -fsS -H "Authorization: Bearer $token" localhost:8000/nodes \

@@ -94,23 +94,34 @@ docker compose ps -a
 
 ### 1. Web Console
 
-Open **http://localhost:8000** in your browser to access the NetWatch Console:
+Open **http://localhost:8000** (or **:8001**, either replica works) and sign in. The bootstrap admin is `admin` / the `ADMIN_PASSWORD` from `.env` (dev default `netwatch-admin-dev`).
 
 - **Live Topology Graph:** Displays declared links (dashed grey), observed healthy links (solid), and drift/degraded links (red), polling automatically every few seconds.
 - **Time-Travel Slider:** Scrub backward in time (`?at=`) to see the network as it was, and add `?known_at=` to see what NetWatch believed at a given moment (see *Bitemporal History* below).
-- **Operator Actions:** Trigger A → B path traces, inspect drift alerts, apply/dismiss recommendations, or revoke compromised nodes (`admin` role; all writes are recorded in the append-only `audit_log`). A revoked node is refused on heartbeat, probe submission and re-enrollment, and its links are closed.
+- **Operator Actions:** Trigger A → B path traces, run drift diagnosis, apply/dismiss recommendations and acknowledge alerts (`operator`). Revoke or reinstate nodes and manage users (`admin`). Every write is recorded in the append-only `audit_log` with the real client IP. A revoked node is refused on heartbeat, probe submission and re-enrollment, and its links are closed.
 - **Alerts:** the leader's `AlertEngine` checks every observed link every 5s using a 30s average. It raises a **packet loss** alert above 2% (`critical` from 20%) and a **latency** alert above the link's declared `expected_latency_ms` (20 ms for undeclared links). A rule must stay breached for 15s (`PENDING`) before it fires. It resolves only once loss is back at or below 1%, or latency at or below 80% of the SLO, so a value hovering at the threshold doesn't flap. Timers survive leader failover (`alert_timers`). Alerts for links that disappear are resolved. Separately, the `LeaseManager` raises one `Node unreachable` alert per offline node.
-- **Writes go to the leader:** only the active leader accepts writes. The standby replica serves reads but answers writes with `503` (check `GET /health` for `is_leader`), so after a failover use the other port.
+- **Either replica works:** only the leader executes writes. The standby forwards write requests to it over `MGMT_NET` (`PEER_REST_URL`) and returns the leader's response. It answers `503` only while no leader is reachable, for example mid-election.
 
 ### 2. REST API Quick Examples (PowerShell)
 
-**Obtain a JWT token (`viewer`, `operator` or `admin` role; dev only, the endpoint does not check credentials):**
+**Sign in (tokens last 8h; the role is re-read from the database on every request, so demoting or disabling a user takes effect immediately):**
 
 ```powershell
 $auth = Invoke-RestMethod -Method Post "http://localhost:8000/auth/token" `
   -ContentType "application/json" `
-  -Body '{"subject":"local-admin","role":"operator"}'
+  -Body '{"username":"admin","password":"netwatch-admin-dev"}'
 $headers = @{ Authorization = "Bearer $($auth.access_token)" }
+```
+
+**Manage users (admin): create, change role or password, disable:**
+
+```powershell
+Invoke-RestMethod -Method Post "http://localhost:8000/users" -Headers $headers -ContentType "application/json" `
+  -Body '{"username":"olivia","password":"choose-a-strong-one","role":"operator"}'
+```
+```powershell
+Invoke-RestMethod -Method Patch "http://localhost:8000/users/olivia" -Headers $headers -ContentType "application/json" `
+  -Body '{"disabled":true}'
 ```
 
 **Query live topology (declared vs. observed links):**

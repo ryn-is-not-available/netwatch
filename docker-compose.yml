@@ -12,8 +12,10 @@ x-control-plane-base: &control-plane-base
     NATS_CONTROL_PLANE_PASSWORD: ${NATS_CONTROL_PLANE_PASSWORD:-dev_cp_pass}
     NATS_URL: tls://control_plane:${NATS_CONTROL_PLANE_PASSWORD:-dev_cp_pass}@${NATS_HOST:-172.28.0.31}:${NATS_PORT:-4222}
     JOIN_TOKEN: ${JOIN_TOKEN:-netwatch-dev-join-token-2026}
-    JWT_SECRET: ${JWT_SECRET:-netwatch-dev-jwt-secret-2026}
+    JWT_SECRET: ${JWT_SECRET:-netwatch-dev-jwt-secret-2026-change-me-32b}
     NATS_CA_PATH: /app/certs/ca.crt
+    ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+    ADMIN_PASSWORD: ${ADMIN_PASSWORD:-netwatch-admin-dev}
   volumes:
     - ./certs:/app/certs:ro
     - ./agent:/app/agent:ro
@@ -167,9 +169,13 @@ services:
       NATS_CONTROL_PLANE_PASSWORD: ${NATS_CONTROL_PLANE_PASSWORD:-dev_cp_pass}
       NATS_URL: tls://control_plane:${NATS_CONTROL_PLANE_PASSWORD:-dev_cp_pass}@${NATS_HOST:-172.28.0.31}:${NATS_PORT:-4222}
       JOIN_TOKEN: ${JOIN_TOKEN:-netwatch-dev-join-token-2026}
-      JWT_SECRET: ${JWT_SECRET:-netwatch-dev-jwt-secret-2026}
+      JWT_SECRET: ${JWT_SECRET:-netwatch-dev-jwt-secret-2026-change-me-32b}
       NATS_CA_PATH: /app/certs/ca.crt
       INSTANCE_ID: control-plane-1
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-netwatch-admin-dev}
+      # The standby forwards REST writes here (the other replica's API on MGMT_NET).
+      PEER_REST_URL: http://172.28.0.33:8000
     ports: ["8000:8000"]
     networks:
       MGMT_NET:
@@ -189,9 +195,13 @@ services:
       NATS_CONTROL_PLANE_PASSWORD: ${NATS_CONTROL_PLANE_PASSWORD:-dev_cp_pass}
       NATS_URL: tls://control_plane:${NATS_CONTROL_PLANE_PASSWORD:-dev_cp_pass}@${NATS_HOST:-172.28.0.31}:${NATS_PORT:-4222}
       JOIN_TOKEN: ${JOIN_TOKEN:-netwatch-dev-join-token-2026}
-      JWT_SECRET: ${JWT_SECRET:-netwatch-dev-jwt-secret-2026}
+      JWT_SECRET: ${JWT_SECRET:-netwatch-dev-jwt-secret-2026-change-me-32b}
       NATS_CA_PATH: /app/certs/ca.crt
       INSTANCE_ID: control-plane-2
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-netwatch-admin-dev}
+      # The standby forwards REST writes here (the other replica's API on MGMT_NET).
+      PEER_REST_URL: http://172.28.0.32:8000
     ports: ["8001:8000"]
     networks:
       MGMT_NET:

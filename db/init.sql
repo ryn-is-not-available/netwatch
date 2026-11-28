@@ -181,6 +181,16 @@ CREATE TABLE path_traces (
 CREATE INDEX idx_path_traces_nodes_time ON path_traces (src_node_id, dst_node_id, captured_at DESC);
 
 
+-- Console users (REST/UI). The bootstrap admin is seeded from ADMIN_USERNAME/ADMIN_PASSWORD.
+CREATE TABLE users (
+    username VARCHAR(64) PRIMARY KEY,
+    password_hash TEXT NOT NULL,
+    role VARCHAR(16) NOT NULL CHECK (role IN ('viewer', 'operator', 'admin')),
+    disabled BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE audit_log (
     log_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     actor_id VARCHAR(255) NOT NULL,

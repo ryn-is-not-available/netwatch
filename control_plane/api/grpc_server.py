@@ -15,6 +15,7 @@ import os
 
 from nats.js.api import RetentionPolicy, StorageType, StreamConfig
 from control_plane.domain.alert_evaluator import AlertEngine
+from control_plane.domain.auth import seed_admin
 from control_plane.domain.lease_manager import LeaseManager
 from control_plane.domain.link_history import observe_link
 from control_plane.adapters.elector import LeaderElector
@@ -467,6 +468,13 @@ def serve() -> None:
         daemon=True,
     )
     alert_thread.start()
+
+    admin_username = (os.environ.get("ADMIN_USERNAME") or "admin").strip()
+    admin_password = os.environ.get("ADMIN_PASSWORD") or ""
+    if admin_password:
+        seed_admin(db_dsn, admin_username, admin_password)
+    else:
+        logger.warning("ADMIN_PASSWORD is not set: no bootstrap admin was created")
 
     rest_app = create_rest_app(db_dsn=db_dsn, elector=elector)
     rest_config = uvicorn.Config(
