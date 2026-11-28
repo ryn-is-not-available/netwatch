@@ -4,6 +4,7 @@ from agent.collector import MetricsCollector
 from agent.enroll import ensure_enrolled
 from datetime import datetime,timezone
 from agent.config import AgentConfig
+from agent.peers import PeerDirectory
 from typing import Callable , Any
 from pathlib import Path
 
@@ -32,8 +33,10 @@ class HeartBeat:
         config : AgentConfig,
         collector : MetricsCollector,
         on_command: Callable[[dict[str, Any]], None] | None = None,
+        peers: PeerDirectory | None = None,
         ) -> None:
         self._on_command = on_command
+        self._peers = peers
         self._metricCollector = collector
         self._config = config
         self.current_leader_epoch = 0
@@ -50,12 +53,20 @@ class HeartBeat:
         return addrs
 
     def generatePulse(self) -> netwatch_pb2.Heartbeat:
+        # Use the collector loop's latest sample: calling read_cpu_pct() from this thread
+        # would advance the shared CPU-delta state and skew both readings.
+        latest = self._metricCollector.latest()
+        if latest is not None:
+            cpu_pct, mem_pct = latest.cpu_pct, latest.mem_pct
+        else:
+            cpu_pct, mem_pct = 0.0, self._metricCollector.read_mem_info()[-1]
         return netwatch_pb2.Heartbeat(
             node_id = self._config.node_id,
             timestamp=datetime.now(timezone.utc),
-            cpu_usage_pct = self._metricCollector.read_cpu_pct(),
-            memory_usage_pct = self._metricCollector.read_mem_info()[-1],
-            uptime_seconds = int(self._metricCollector.read_uptime_sec())
+            cpu_usage_pct = cpu_pct,
+            memory_usage_pct = mem_pct,
+            uptime_seconds = int(self._metricCollector.read_uptime_sec()),
+            data_ip = self._config.data_ip,
         )
 
     def heartbeatClient(self) -> netwatch_pb2.Ack:
@@ -112,6 +123,8 @@ class HeartBeat:
                         logger.warning("Clock drift with %s is %+d ms", addr, drift_ms)
 
                     self._preferred_addr = addr
+                    if self._peers is not None:
+                        self._peers.update({p.node_id: p.data_ip for p in resp.peers})
                     return resp
 
                 except grpc.RpcError as exc:

@@ -12,19 +12,10 @@ import grpc
 
 from agent.config import AgentConfig
 from agent.enroll import ensure_enrolled
+from agent.peers import PeerDirectory
 from shared import netwatch_pb2, netwatch_pb2_grpc
 
 logger = logging.getLogger("netwatch.agent.prober")
-
-DEFAULT_PEER_IPS: dict[str, str] = {
-    "node-1": "172.29.0.10",
-    "node-2": "172.29.0.11",
-    "node-3": "172.29.0.12",
-    "node-4": "172.29.0.13",
-    "node-5": "172.29.0.14",
-}
-IP_TO_NODE: dict[str, str] = {ip: nid for nid, ip in DEFAULT_PEER_IPS.items()}
-
 
 def parse_ping_output(stdout: str) -> tuple[bool, float, float, float]:
     """Parses `ping -c N -W 2 -q` output -> (success, avg_rtt_ms, jitter_ms, packet_loss_pct)."""
@@ -52,11 +43,12 @@ class ActiveProber:
     def __init__(
         self,
         config: AgentConfig,
-        peer_ips: dict[str, str] | None = None,
+        peers: PeerDirectory,
         probe_interval_s: float = 5.0,
     ) -> None:
         self._config = config
-        self._peer_ips = dict(peer_ips or DEFAULT_PEER_IPS)
+        # Probe targets come from the control plane via heartbeat Acks (no hard-coded list).
+        self._peers = peers
         self._probe_interval_s = probe_interval_s
         # Last control plane that accepted a probe result; tried first (see HeartBeat).
         self._preferred_addr: str | None = None
@@ -131,7 +123,7 @@ class ActiveProber:
                             "status": "DONE",
                             "hop": hop_num,
                             "ip": hop_ip,
-                            "node_id": IP_TO_NODE.get(hop_ip, hop_ip),
+                            "node_id": self._peers.node_for_ip(hop_ip) or hop_ip,
                             "rtt_ms": hop_rtt,
                         }
                     )
@@ -207,7 +199,8 @@ class ActiveProber:
     def execute_trace_command(self, payload: dict[str, object]) -> None:
         trace_id = str(payload.get("trace_id", "")).strip()
         dst_node_id = str(payload.get("dst_node_id", "")).strip()
-        target_ip = self._peer_ips.get(dst_node_id, dst_node_id)
+        # The control plane puts the destination's DATA_NET address in the command.
+        target_ip = str(payload.get("dst_data_ip") or "").strip() or self._peers.ip_for(dst_node_id) or dst_node_id
         if not trace_id or not dst_node_id:
             return
 
@@ -225,9 +218,7 @@ class ActiveProber:
         )
 
     def probe_all_peers_once(self) -> None:
-        for peer_id, peer_ip in self._peer_ips.items():
-            if peer_id == self._config.node_id:
-                continue
+        for peer_id, peer_ip in sorted(self._peers.snapshot().items()):
             ok, avg_ms, jitter_ms, loss_pct, err = self.run_icmp_probe(peer_ip, count=2, timeout_s=2)
             try:
                 self.submit_probe_result(

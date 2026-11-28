@@ -25,7 +25,7 @@ _sym_db = _symbol_database.Default()
 from google.protobuf import timestamp_pb2 as google_dot_protobuf_dot_timestamp__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0enetwatch.proto\x12\x0bnetwatch.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"K\n\rEnrollRequest\x12\x0f\n\x07node_id\x18\x01 \x01(\t\x12\x18\n\x10\x65nrollment_token\x18\x02 \x01(\t\x12\x0f\n\x07\x63sr_pem\x18\x03 \x01(\x0c\"\"\n\x0e\x45nrollResponse\x12\x10\n\x08\x63\x65rt_pem\x18\x01 \x01(\x0c\"\x94\x01\n\tHeartbeat\x12\x0f\n\x07node_id\x18\x01 \x01(\t\x12-\n\ttimestamp\x18\x02 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\x15\n\rcpu_usage_pct\x18\x03 \x01(\x01\x12\x18\n\x10memory_usage_pct\x18\x04 \x01(\x01\x12\x16\n\x0euptime_seconds\x18\x05 \x01(\x03\"\xf1\x01\n\x0bProbeResult\x12\x0f\n\x07node_id\x18\x01 \x01(\t\x12\x10\n\x08probe_id\x18\x02 \x01(\t\x12-\n\ttimestamp\x18\x03 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\x12\n\nprobe_type\x18\x04 \x01(\t\x12\x14\n\x0cprobe_target\x18\x05 \x01(\t\x12\x12\n\nlatency_ms\x18\x06 \x01(\x01\x12\x11\n\tjitter_ms\x18\x07 \x01(\x01\x12\x17\n\x0fpacket_loss_pct\x18\x08 \x01(\x01\x12\x0f\n\x07success\x18\t \x01(\x08\x12\x15\n\rerror_message\x18\n \x01(\t\"U\n\x03\x41\x63k\x12\n\n\x02ok\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x1b\n\x13server_timestamp_ms\x18\x03 \x01(\x03\x12\x14\n\x0cleader_epoch\x18\x04 \x01(\x03\x32\xcf\x01\n\x0e\x43ontrolService\x12\x41\n\x06\x45nroll\x12\x1a.netwatch.v1.EnrollRequest\x1a\x1b.netwatch.v1.EnrollResponse\x12\x39\n\rSendHeartbeat\x12\x16.netwatch.v1.Heartbeat\x1a\x10.netwatch.v1.Ack\x12?\n\x11SubmitProbeResult\x12\x18.netwatch.v1.ProbeResult\x1a\x10.netwatch.v1.Ackb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0enetwatch.proto\x12\x0bnetwatch.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"K\n\rEnrollRequest\x12\x0f\n\x07node_id\x18\x01 \x01(\t\x12\x18\n\x10\x65nrollment_token\x18\x02 \x01(\t\x12\x0f\n\x07\x63sr_pem\x18\x03 \x01(\x0c\"\"\n\x0e\x45nrollResponse\x12\x10\n\x08\x63\x65rt_pem\x18\x01 \x01(\x0c\"\xa5\x01\n\tHeartbeat\x12\x0f\n\x07node_id\x18\x01 \x01(\t\x12-\n\ttimestamp\x18\x02 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\x15\n\rcpu_usage_pct\x18\x03 \x01(\x01\x12\x18\n\x10memory_usage_pct\x18\x04 \x01(\x01\x12\x16\n\x0euptime_seconds\x18\x05 \x01(\x03\x12\x0f\n\x07\x64\x61ta_ip\x18\x06 \x01(\t\"(\n\x04Peer\x12\x0f\n\x07node_id\x18\x01 \x01(\t\x12\x0f\n\x07\x64\x61ta_ip\x18\x02 \x01(\t\"\xf1\x01\n\x0bProbeResult\x12\x0f\n\x07node_id\x18\x01 \x01(\t\x12\x10\n\x08probe_id\x18\x02 \x01(\t\x12-\n\ttimestamp\x18\x03 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\x12\n\nprobe_type\x18\x04 \x01(\t\x12\x14\n\x0cprobe_target\x18\x05 \x01(\t\x12\x12\n\nlatency_ms\x18\x06 \x01(\x01\x12\x11\n\tjitter_ms\x18\x07 \x01(\x01\x12\x17\n\x0fpacket_loss_pct\x18\x08 \x01(\x01\x12\x0f\n\x07success\x18\t \x01(\x08\x12\x15\n\rerror_message\x18\n \x01(\t\"w\n\x03\x41\x63k\x12\n\n\x02ok\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x1b\n\x13server_timestamp_ms\x18\x03 \x01(\x03\x12\x14\n\x0cleader_epoch\x18\x04 \x01(\x03\x12 \n\x05peers\x18\x05 \x03(\x0b\x32\x11.netwatch.v1.Peer2\xcf\x01\n\x0e\x43ontrolService\x12\x41\n\x06\x45nroll\x12\x1a.netwatch.v1.EnrollRequest\x1a\x1b.netwatch.v1.EnrollResponse\x12\x39\n\rSendHeartbeat\x12\x16.netwatch.v1.Heartbeat\x1a\x10.netwatch.v1.Ack\x12?\n\x11SubmitProbeResult\x12\x18.netwatch.v1.ProbeResult\x1a\x10.netwatch.v1.Ackb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -37,11 +37,13 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_ENROLLRESPONSE']._serialized_start=141
   _globals['_ENROLLRESPONSE']._serialized_end=175
   _globals['_HEARTBEAT']._serialized_start=178
-  _globals['_HEARTBEAT']._serialized_end=326
-  _globals['_PROBERESULT']._serialized_start=329
-  _globals['_PROBERESULT']._serialized_end=570
-  _globals['_ACK']._serialized_start=572
-  _globals['_ACK']._serialized_end=657
-  _globals['_CONTROLSERVICE']._serialized_start=660
-  _globals['_CONTROLSERVICE']._serialized_end=867
+  _globals['_HEARTBEAT']._serialized_end=343
+  _globals['_PEER']._serialized_start=345
+  _globals['_PEER']._serialized_end=385
+  _globals['_PROBERESULT']._serialized_start=388
+  _globals['_PROBERESULT']._serialized_end=629
+  _globals['_ACK']._serialized_start=631
+  _globals['_ACK']._serialized_end=750
+  _globals['_CONTROLSERVICE']._serialized_start=753
+  _globals['_CONTROLSERVICE']._serialized_end=960
 # @@protoc_insertion_point(module_scope)

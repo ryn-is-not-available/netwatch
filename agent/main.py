@@ -5,6 +5,7 @@ from agent.heartbeat import HeartBeat
 from agent.publisher import TelemetryPublisher
 from agent.ring_buffer import RingBuffer
 from agent.prober import ActiveProber
+from agent.peers import PeerDirectory
 
 import logging
 import signal
@@ -39,7 +40,8 @@ def main() -> None:
 
     collector = MetricsCollector(data_ip=cfg.data_ip)
     ring_buffer = RingBuffer(capacity=cfg.buffer_capacity)
-    prober = ActiveProber(cfg)
+    peers = PeerDirectory(cfg.node_id)
+    prober = ActiveProber(cfg, peers)
     def _dispatch_command(cmd: dict) -> None:
         # Traces take up to ~16s against an unreachable peer. Running them on the heartbeat
         # thread would stall heartbeats past the 7.5s/12s lease thresholds and get this node
@@ -56,7 +58,7 @@ def main() -> None:
 
         threading.Thread(target=_run, name=f"cmd-{cmd.get('command_id')}", daemon=True).start()
 
-    heartbeat = HeartBeat(cfg, collector, on_command=_dispatch_command)
+    heartbeat = HeartBeat(cfg, collector, on_command=_dispatch_command, peers=peers)
     publisher = TelemetryPublisher(cfg, collector, ring_buffer)
 
     threads = [

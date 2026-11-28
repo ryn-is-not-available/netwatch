@@ -1,9 +1,10 @@
 import datetime
 
 from google.protobuf import timestamp_pb2 as _timestamp_pb2
+from google.protobuf.internal import containers as _containers
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import message as _message
-from collections.abc import Mapping as _Mapping
+from collections.abc import Iterable as _Iterable, Mapping as _Mapping
 from typing import ClassVar as _ClassVar, Optional as _Optional, Union as _Union
 
 DESCRIPTOR: _descriptor.FileDescriptor
@@ -25,18 +26,28 @@ class EnrollResponse(_message.Message):
     def __init__(self, cert_pem: _Optional[bytes] = ...) -> None: ...
 
 class Heartbeat(_message.Message):
-    __slots__ = ("node_id", "timestamp", "cpu_usage_pct", "memory_usage_pct", "uptime_seconds")
+    __slots__ = ("node_id", "timestamp", "cpu_usage_pct", "memory_usage_pct", "uptime_seconds", "data_ip")
     NODE_ID_FIELD_NUMBER: _ClassVar[int]
     TIMESTAMP_FIELD_NUMBER: _ClassVar[int]
     CPU_USAGE_PCT_FIELD_NUMBER: _ClassVar[int]
     MEMORY_USAGE_PCT_FIELD_NUMBER: _ClassVar[int]
     UPTIME_SECONDS_FIELD_NUMBER: _ClassVar[int]
+    DATA_IP_FIELD_NUMBER: _ClassVar[int]
     node_id: str
     timestamp: _timestamp_pb2.Timestamp
     cpu_usage_pct: float
     memory_usage_pct: float
     uptime_seconds: int
-    def __init__(self, node_id: _Optional[str] = ..., timestamp: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., cpu_usage_pct: _Optional[float] = ..., memory_usage_pct: _Optional[float] = ..., uptime_seconds: _Optional[int] = ...) -> None: ...
+    data_ip: str
+    def __init__(self, node_id: _Optional[str] = ..., timestamp: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., cpu_usage_pct: _Optional[float] = ..., memory_usage_pct: _Optional[float] = ..., uptime_seconds: _Optional[int] = ..., data_ip: _Optional[str] = ...) -> None: ...
+
+class Peer(_message.Message):
+    __slots__ = ("node_id", "data_ip")
+    NODE_ID_FIELD_NUMBER: _ClassVar[int]
+    DATA_IP_FIELD_NUMBER: _ClassVar[int]
+    node_id: str
+    data_ip: str
+    def __init__(self, node_id: _Optional[str] = ..., data_ip: _Optional[str] = ...) -> None: ...
 
 class ProbeResult(_message.Message):
     __slots__ = ("node_id", "probe_id", "timestamp", "probe_type", "probe_target", "latency_ms", "jitter_ms", "packet_loss_pct", "success", "error_message")
@@ -63,13 +74,15 @@ class ProbeResult(_message.Message):
     def __init__(self, node_id: _Optional[str] = ..., probe_id: _Optional[str] = ..., timestamp: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., probe_type: _Optional[str] = ..., probe_target: _Optional[str] = ..., latency_ms: _Optional[float] = ..., jitter_ms: _Optional[float] = ..., packet_loss_pct: _Optional[float] = ..., success: _Optional[bool] = ..., error_message: _Optional[str] = ...) -> None: ...
 
 class Ack(_message.Message):
-    __slots__ = ("ok", "message", "server_timestamp_ms", "leader_epoch")
+    __slots__ = ("ok", "message", "server_timestamp_ms", "leader_epoch", "peers")
     OK_FIELD_NUMBER: _ClassVar[int]
     MESSAGE_FIELD_NUMBER: _ClassVar[int]
     SERVER_TIMESTAMP_MS_FIELD_NUMBER: _ClassVar[int]
     LEADER_EPOCH_FIELD_NUMBER: _ClassVar[int]
+    PEERS_FIELD_NUMBER: _ClassVar[int]
     ok: bool
     message: str
     server_timestamp_ms: int
     leader_epoch: int
-    def __init__(self, ok: _Optional[bool] = ..., message: _Optional[str] = ..., server_timestamp_ms: _Optional[int] = ..., leader_epoch: _Optional[int] = ...) -> None: ...
+    peers: _containers.RepeatedCompositeFieldContainer[Peer]
+    def __init__(self, ok: _Optional[bool] = ..., message: _Optional[str] = ..., server_timestamp_ms: _Optional[int] = ..., leader_epoch: _Optional[int] = ..., peers: _Optional[_Iterable[_Union[Peer, _Mapping]]] = ...) -> None: ...

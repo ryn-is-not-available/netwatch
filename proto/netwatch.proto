@@ -21,7 +21,13 @@ message Heartbeat {
     double cpu_usage_pct = 3;
     double memory_usage_pct = 4;
     int64 uptime_seconds = 5;
+    // Address on DATA_NET; the control plane hands it to peers so they know whom to probe.
+    string data_ip = 6;
+}
 
+message Peer {
+    string node_id = 1;
+    string data_ip = 2;
 }
 
 message ProbeResult {
@@ -43,6 +49,8 @@ message Ack {
     string message = 2;
     int64 server_timestamp_ms = 3;
     int64 leader_epoch = 4;
+    // Heartbeat Acks carry the current probe targets (live peers, excluding the caller).
+    repeated Peer peers = 5;
 }
 
 service ControlService {

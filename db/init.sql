@@ -10,7 +10,9 @@ CREATE TABLE nodes (
     health_status VARCHAR(255) NOT NULL
         CHECK (health_status IN ('enrolled', 'healthy', 'degraded', 'offline', 'revoked')),
     active_certificate TEXT,
-    last_heartbeat TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    last_heartbeat TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    -- DATA_NET address reported in heartbeats; handed to peers as their probe target.
+    data_ip VARCHAR(64)
 );
 
 CREATE TABLE network_interfaces (
@@ -241,6 +243,10 @@ SELECT create_hypertable('interface_metrics', 'time', if_not_exists => TRUE);
 
 CREATE UNIQUE INDEX uq_node_metrics_tick
     ON node_metrics (time, node_id, boot_id, seq_id);
+
+-- One sample per interface per tick: lets the worker re-ingest redelivered messages safely.
+CREATE UNIQUE INDEX uq_interface_metrics_tick
+    ON interface_metrics (time, node_id, interface_name);
 
 
 

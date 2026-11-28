@@ -359,6 +359,8 @@ def create_rest_app(db_dsn: str, elector: LeaderElector) -> FastAPI:
                         status_code=409,
                         detail=f"Source node {body.src_node_id} is {statuses[body.src_node_id]} and cannot run a trace",
                     )
+                cur.execute("SELECT data_ip FROM nodes WHERE node_id = %s;", (body.dst_node_id,))
+                dst_data_ip = (cur.fetchone() or [None])[0]
                 cur.execute("SELECT src_node_id, dst_node_id, admin_cost FROM desired_topology_links;")
                 declared = [DeclaredLink(r[0], r[1], float(r[2])) for r in cur.fetchall()]
                 nominal_cost, nominal_path = graph_engine.shortest_path(
@@ -398,7 +400,11 @@ def create_rest_app(db_dsn: str, elector: LeaderElector) -> FastAPI:
                     (
                         body.src_node_id,
                         __import__("json").dumps(
-                            {"trace_id": trace_id, "dst_node_id": body.dst_node_id}
+                            {
+                                "trace_id": trace_id,
+                                "dst_node_id": body.dst_node_id,
+                                "dst_data_ip": dst_data_ip,
+                            }
                         ),
                         active_epoch,
                     ),

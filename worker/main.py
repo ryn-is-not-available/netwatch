@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import dataclass
 from datetime import datetime
 import json
 import logging
@@ -49,33 +50,110 @@ ON CONFLICT (time, node_id, boot_id, seq_id) DO NOTHING;
 """
 
 
-def _parse_tick_row(raw_data: bytes) -> tuple[Any, ...]:
-    """Parses a JSON telemetry message into a parameter tuple matching INSERT_NODE_METRICS_SQL."""
+# Interface inventory is upserted only for enrolled nodes (the FK would otherwise fail the
+# whole batch for ticks that arrive before the node's Enroll call).
+UPSERT_INTERFACE_SQL = """
+INSERT INTO network_interfaces (node_id, name, mac_address, ip_addresses, oper_status, updated_at)
+SELECT %s, %s, %s::macaddr, %s::inet[], %s, NOW()
+WHERE EXISTS (SELECT 1 FROM nodes WHERE node_id = %s)
+ON CONFLICT (node_id, name) DO UPDATE SET
+    mac_address = EXCLUDED.mac_address,
+    ip_addresses = EXCLUDED.ip_addresses,
+    oper_status = EXCLUDED.oper_status,
+    updated_at = NOW()
+RETURNING interface_id;
+"""
 
+INSERT_INTERFACE_METRICS_SQL = """
+INSERT INTO interface_metrics (
+    time, interface_id, interface_name, node_id, rx_bytes, tx_bytes, rx_errors, tx_errors
+)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+ON CONFLICT (time, node_id, interface_name) DO NOTHING;
+"""
+
+_OPER_STATES = {"up", "down", "degraded", "dormant"}
+
+
+@dataclass(frozen=True)
+class Tick:
+    node_id: str
+    time: datetime
+    node_row: tuple[Any, ...]          # parameters for INSERT_NODE_METRICS_SQL
+    interfaces: list[dict[str, Any]]
+
+
+def _parse_tick(raw_data: bytes) -> Tick:
+    """Parses a JSON telemetry message (one agent collector tick)."""
     doc = json.loads(raw_data.decode())
-    
-    return (
-            datetime.fromisoformat(doc["timestamp"]),
-            doc["node_id"], doc["boot_id"],
-            int(doc["seq_id"]),
-            doc.get("cpu_pct"),
-            doc.get("mem_pct"),
-            int(doc.get("uptime_sec", 0)),
-            doc.get("data_iface"),
-            doc.get("rx_bytes"),
-            doc.get("tx_bytes"),
-            doc.get("rx_drops"),
-            doc.get("tx_drops")
-            )
+    ts = datetime.fromisoformat(doc["timestamp"])
+    node_id = doc["node_id"]
+    node_row = (
+        ts,
+        node_id,
+        doc["boot_id"],
+        int(doc["seq_id"]),
+        doc.get("cpu_pct"),
+        doc.get("mem_pct"),
+        int(doc.get("uptime_sec", 0)),
+        doc.get("data_iface"),
+        doc.get("rx_bytes"),
+        doc.get("tx_bytes"),
+        doc.get("rx_drops"),
+        doc.get("tx_drops"),
+    )
+    interfaces = [i for i in doc.get("interfaces") or [] if isinstance(i, dict) and i.get("name")]
+    return Tick(node_id=node_id, time=ts, node_row=node_row, interfaces=interfaces)
 
 
-def _flush_batch_to_db(conn: psycopg.Connection[Any], rows: list[tuple[Any, ...]]) -> int:
-    """Executes an idempotent batch insert inside a single transaction."""
+def _flush_batch_to_db(conn: psycopg.Connection[Any], ticks: list[Tick]) -> int:
+    """Writes node and interface metrics for a batch in one idempotent transaction."""
     try:
         with conn.cursor() as cur:
-            cur.executemany(INSERT_NODE_METRICS_SQL, rows)
+            cur.executemany(INSERT_NODE_METRICS_SQL, [t.node_row for t in ticks])
+
+            # Inventory: latest metadata per (node, interface) in this batch.
+            latest: dict[tuple[str, str], dict[str, Any]] = {}
+            for t in ticks:
+                for iface in t.interfaces:
+                    latest[(t.node_id, iface["name"])] = iface
+            interface_ids: dict[tuple[str, str], Any] = {}
+            for (node_id, name), iface in latest.items():
+                oper = iface.get("oper_status") if iface.get("oper_status") in _OPER_STATES else "up"
+                cur.execute(
+                    UPSERT_INTERFACE_SQL,
+                    (
+                        node_id,
+                        name,
+                        iface.get("mac") or "00:00:00:00:00:00",
+                        list(iface.get("ips") or []),
+                        oper,
+                        node_id,
+                    ),
+                )
+                row = cur.fetchone()
+                if row is not None:
+                    interface_ids[(node_id, name)] = row[0]
+
+            metric_rows = [
+                (
+                    t.time,
+                    interface_ids[(t.node_id, iface["name"])],
+                    iface["name"],
+                    t.node_id,
+                    iface.get("rx_bytes"),
+                    iface.get("tx_bytes"),
+                    iface.get("rx_errors"),
+                    iface.get("tx_errors"),
+                )
+                for t in ticks
+                for iface in t.interfaces
+                if (t.node_id, iface["name"]) in interface_ids
+            ]
+            if metric_rows:
+                cur.executemany(INSERT_INTERFACE_METRICS_SQL, metric_rows)
         conn.commit()
-        return len(rows)
+        return len(ticks)
     except Exception:
         conn.rollback()
         raise
@@ -138,11 +216,11 @@ async def run_worker(stop_event: asyncio.Event) -> None:
             except NatsTimeoutError:
                 continue
 
-            rows: list[tuple[Any, ...]] = []
+            rows: list[Tick] = []
             valid_msgs = []
             for msg in msgs:
                 try:
-                    rows.append(_parse_tick_row(msg.data))
+                    rows.append(_parse_tick(msg.data))
                     valid_msgs.append(msg)
                 except Exception as exc:
                     logger.error("Poison telemetry message dropped (terminating): %s", exc)

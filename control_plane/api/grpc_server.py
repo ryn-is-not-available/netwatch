@@ -156,18 +156,32 @@ class ControlServiceServicer(netwatch_pb2_grpc.ControlServiceServicer):
                     context.abort(grpc.StatusCode.PERMISSION_DENIED, "Node is revoked")
                 cur.execute(
                     """
-                    INSERT INTO nodes (node_id, ip_address, health_status, last_heartbeat)
-                    VALUES (%s, %s, 'healthy', NOW())
+                    INSERT INTO nodes (node_id, ip_address, data_ip, health_status, last_heartbeat)
+                    VALUES (%s, %s, NULLIF(%s, ''), 'healthy', NOW())
                     ON CONFLICT (node_id) DO UPDATE SET
                         ip_address = EXCLUDED.ip_address,
+                        data_ip = COALESCE(EXCLUDED.data_ip, nodes.data_ip),
                         health_status = CASE
                             WHEN nodes.health_status = 'revoked' THEN 'revoked'
                             ELSE 'healthy'
                         END,
                         last_heartbeat = NOW();
                     """,
-                    (node_id, peer_ip),
+                    (node_id, peer_ip, request.data_ip.strip()),
                 )
+
+                # Probe targets for this node: every other live node with a known DATA_NET address.
+                cur.execute(
+                    """
+                    SELECT node_id, data_ip FROM nodes
+                    WHERE node_id <> %s
+                      AND data_ip IS NOT NULL
+                      AND health_status IN ('enrolled', 'healthy', 'degraded')
+                    ORDER BY node_id;
+                    """,
+                    (node_id,),
+                )
+                peers = [netwatch_pb2.Peer(node_id=r[0], data_ip=r[1]) for r in cur.fetchall()]
 
                 cur.execute(
                     """
@@ -209,6 +223,7 @@ class ControlServiceServicer(netwatch_pb2_grpc.ControlServiceServicer):
             message=ack_message,
             server_timestamp_ms=int(time.time() * 1000),
             leader_epoch=self.elector.epoch,
+            peers=peers,
         )
 
     def SubmitProbeResult(

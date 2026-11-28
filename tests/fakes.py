@@ -11,6 +11,10 @@ class FakeCursor:
     def execute(self, sql: str, params=()) -> None:
         self.executed.append((sql, tuple(params) if params is not None else ()))
 
+    def executemany(self, sql: str, params_seq) -> None:
+        for params in params_seq:
+            self.execute(sql, params)
+
     def fetchone(self):
         return self.fetchone_queue.pop(0) if self.fetchone_queue else None
 

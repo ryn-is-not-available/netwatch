@@ -9,7 +9,7 @@ NetWatch monitors distributed infrastructure across isolated management (`MGMT_N
 ### Core Architecture
 
 - **Control Plane (`control_plane/`):** Two active-passive FastAPI + gRPC replicas (`control-plane-1` on `:8000`, `control-plane-2` on `:8001`) using PostgreSQL advisory-lock leader election (`leader_epoch`) and fenced database writes (`elector.fenced_execute`).
-- **Node Agents (`agent/`):** Outbound-only mTLS gRPC heartbeats (every 5s) with piggybacked ICMP/peer probe commands (`ActiveProber`), `/proc` host and interface metrics collection, and a 1,000-tick circular RAM ring buffer for NATS outage resilience.
+- **Node Agents (`agent/`):** Outbound-only mTLS gRPC heartbeats (every 5s). Each heartbeat Ack carries probe commands and the current **peer list** (every other live node's `DATA_NET` address, so nodes need no hard-coded peers). The agent also runs ICMP peer probes (`ActiveProber`), collects host and per-interface metrics from `/proc` and `/sys` (name, MAC, IPs, oper state, bytes/errors/drops), and keeps a 1,000-tick in-memory ring buffer so no telemetry is lost during a NATS outage.
 - **Ingestion & Bitemporal Storage (`worker/`, `db/`):** NATS JetStream (`TELEMETRY` stream) feeding a deduplicating batch worker (`boot_id`, `seq_id`) into PostgreSQL 16 + TimescaleDB hypertables with non-overlapping bitemporal `tstzrange` intervals (`valid_during`, `recorded_during`).
 - **Web Console (`control_plane/ui/`):** Live Cytoscape.js topology map showing declared vs. observed links, drift highlights, a bitemporal time-travel slider, and operator controls (`Trace`, `Diagnose`, `Approve/Reject`, `Revoke`).
 
@@ -183,7 +183,7 @@ pytest -v
 ### Phase 2 · Agent & Telemetry — Complete
 
 - [x] **2.1** Circular RAM `RingBuffer` (`1,000` ticks, monotonic `seq_id`, `boot_id`, unit tests)
-- [x] **2.2** Host & interface collector (`/proc` CPU/RAM, `DATA_NET` interface rx/tx/drop counters, `DATA_NET` neighbors)
+- [x] **2.2** Host & interface collector (`/proc` CPU/RAM, per-interface rx/tx/errors/drops + MAC/IPs into `network_interfaces` / `interface_metrics`; data interface found by `DATA_IP`)
 - [x] **2.3** Outbound-only mTLS agent (`Enroll`, 5s `Heartbeat` with zero listening ports, NATS JetStream publisher with `PubAck` draining)
 - [x] **2.4** NATS JetStream batch worker with staging table deduplication (`ON CONFLICT DO NOTHING`)
 - [x] **2.5** NATS outage resilience verified (0 lost ticks, 0 duplicate rows)
