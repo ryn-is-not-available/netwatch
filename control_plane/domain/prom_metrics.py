@@ -10,6 +10,7 @@ from typing import Any, Iterable
 NODE_STATUSES = ("enrolled", "healthy", "degraded", "offline", "revoked")
 LINK_STATUSES = ("up", "degraded", "down")
 SEVERITIES = ("info", "warning", "critical")
+CUT_LOSS_PCT = 100.0  # every probe in the 30 s window lost
 
 
 def _label(value: Any) -> str:
@@ -69,8 +70,12 @@ def render(
                [({"node_id": n}, age) for n, _, age in nodes if age is not None])
 
     links = links or []
-    doc.family("netwatch_link_up", "gauge", "1 if the observed link is up or degraded, 0 if down.",
-               [({"src": s, "dst": d}, 0 if st == "down" else 1) for s, d, st, _, _ in links])
+    # A cut link is stored as `degraded` with 100 % loss (the alert engine keeps alerting on it),
+    # so "up" here means "carried probe traffic in the last 30 s".
+    doc.family("netwatch_link_up", "gauge",
+               "1 if the observed link carried probe traffic in the last 30 s; 0 if down or 100% loss.",
+               [({"src": s, "dst": d}, 0 if st == "down" or loss >= CUT_LOSS_PCT else 1)
+                for s, d, st, _, loss in links])
     doc.family("netwatch_link_status", "gauge", "1 for the observed link's current status (one series per status).",
                [({"src": s, "dst": d, "status": x}, 1 if st == x else 0) for s, d, st, _, _ in links for x in LINK_STATUSES])
     doc.family("netwatch_link_latency_ms", "gauge", "Mean probe latency over the last 30 s, in milliseconds.",

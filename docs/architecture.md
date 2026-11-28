@@ -49,7 +49,7 @@ flowchart LR
 
     agent -->|"heartbeat every 5 s, gRPC mTLS :50051"| cp1
     agent -.->|"failover"| cp2
-    agent -->|"signed telemetry, subject telemetry.&lt;node&gt;"| nats
+    agent -->|"signed telemetry, subject telemetry.NODE_ID"| nats
     agent --- mesh
     nats --> worker --> db
     cp1 <-->|"advisory-lock leader election, fenced writes"| db
@@ -129,7 +129,7 @@ sees; T1 is what NetWatch adds.
 | --- | --- | --- | --- |
 | Node health (`healthy` / `degraded` / `offline`) | heartbeat age, `LeaseManager` | degraded after 7.5 s without a heartbeat, offline after 12 s; one `Node unreachable` alert per offline node | console map, `netwatch_node_status`, `netwatch_node_up`, Grafana T1 *Node health* |
 | Heartbeat age | `nodes.last_heartbeat` | expected under 5 s | `netwatch_node_heartbeat_age_seconds` |
-| Link up / down | observed links from the probe mesh | a declared link not observed = *missing* drift | console map, `netwatch_link_up`, `netwatch_link_status` |
+| Link up / down | observed links from the probe mesh | down = every probe lost in the last 30 s (a cut); a declared link not observed = *missing* drift | console map, `netwatch_link_up`, `netwatch_link_status` |
 | Topology drift | desired vs. observed topology | missing declared link, undeclared observed link, lossy link | console *Fixes*, *Diagnose drift* |
 | Control-plane leadership | advisory lock | exactly one leader | `netwatch_control_plane_leader` (sum must be 1), Grafana T1 *Leader* |
 | SNMP agent reachable (T0) | snmp-exporter | target up | `up{job="snmp"}`, Grafana T0 |

@@ -53,6 +53,12 @@ def test_standby_exposes_only_its_leadership() -> None:
     assert "netwatch_db_up" not in r.text and "netwatch_node_up" not in r.text
 
 
+def test_a_cut_link_counts_as_down() -> None:
+    text = prom_metrics.render(instance_id="cp", is_leader=True, epoch=1, db_up=True,
+                               links=[("a", "b", "degraded", 0.0, 100.0), ("b", "a", "degraded", 3.0, 40.0)])
+    assert 'netwatch_link_up{src="a",dst="b"} 0' in text and 'netwatch_link_up{src="b",dst="a"} 1' in text
+
+
 def test_label_values_are_escaped() -> None:
     text = prom_metrics.render(instance_id="cp", is_leader=True, epoch=1, db_up=True,
                                nodes=[('ev"il\\\nx', "healthy", None)])

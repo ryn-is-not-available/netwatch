@@ -223,6 +223,14 @@ Stops `node-1` and checks that it is marked offline, that `LeaseManager` closes 
 powershell -ExecutionPolicy Bypass -File .\scripts\verify_fault_injection.ps1
 ```
 
+### Demo scenario (planning S8)
+
+`scripts/demo.py` runs the demo from **[docs/demo-scenario.md](docs/demo-scenario.md)**: normal operation, 30 % loss on node-3, a cut DATA_NET link on node-4, node-5 stopped, and a control-plane failover. Each act checks what NetWatch (T1) and SNMP (T0) report, prints the detection time and undoes the fault. Add `--pause --hold 30` for a live presentation.
+
+```powershell
+python scripts/demo.py
+```
+
 ### Chaos Injection (`tc netem`, `iperf3`)
 
 `scripts/chaos.py` injects faults on a node's `DATA_NET` interface, measures how fast NetWatch detects them and how fast it recovers, and always removes the fault afterwards (even on Ctrl+C). It uses only the Python standard library, and works the same on Windows and Linux.
