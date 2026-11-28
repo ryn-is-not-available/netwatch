@@ -1,5 +1,5 @@
 import { $, esc, toast } from "./util.js";
-import { api, login, logout, post, patch, setUnauthorizedHandler } from "./api.js";
+import { api, logout, post, patch, setUnauthorizedHandler } from "./api.js";
 import { initGraph, renderGraph, traced } from "./graph.js";
 import { initPanels, renderPanels, handlers, selectNode, showTab } from "./panels.js";
 
@@ -24,13 +24,8 @@ function showUser() {
   $("who").hidden = $("logoutBtn").hidden = false;
 }
 function showLogin(message = "") {
-  me = null;
-  $("who").hidden = $("logoutBtn").hidden = true;
-  $("loginErr").textContent = message;
-  $("loginErr").hidden = !message;
-  const dlg = $("loginDlg");
-  if (!dlg.open) dlg.showModal();
-  $("loginUser").focus();
+  // Sign-in lives on its own page; nothing of the console stays visible when signed out.
+  location.replace(message ? "/login?expired=1" : "/login");
 }
 async function startSession() {
   try {
@@ -38,6 +33,7 @@ async function startSession() {
   } catch {
     return showLogin();
   }
+  document.body.classList.add("authed");
   showUser(); gate(); await refresh();
 }
 async function refresh() {
@@ -135,18 +131,47 @@ initGraph(d => { if (d) selectNode(d.node_id); });
 initPanels();
 handlers.refresh = refresh;
 $("traceBtn").onclick = trace;
-$("aiBtn").onclick = async () => {
-  const b = $("aiBtn");
+// AI diagnosis result window: non-modal (the map stays usable), stays open until closed.
+const SEV = { critical: "bad", warning: "warn", info: "" };
+const ACTION_TEXT = { declare_link: a => `Declare link ${a.src} → ${a.dst}`, run_trace: a => `Run trace ${a.src} → ${a.dst}`, none: () => "No automatic action" };
+function openAiWindow(meta, bodyHtml, { retry = false, fixes = false } = {}) {
+  $("aiDlgMeta").textContent = meta;
+  $("aiDlgBody").innerHTML = bodyHtml;
+  $("aiDlgRetry").hidden = !retry;
+  $("aiDlgFixes").hidden = !fixes;
+  if (!$("aiDlg").open) $("aiDlg").show();
+}
+function renderAiResult(r, secs) {
+  const items = r.items || [];
+  const meta = `${r.model} · ${secs}s · ${r.recommendations_created} new fix${r.recommendations_created === 1 ? "" : "es"} added`;
+  const findings = items.length ? items.map(f => `<article class="ai-finding">
+      <div><span class="pill ${SEV[f.severity] ?? ""}">${esc(f.severity)}</span> <b>${esc(f.title)}</b></div>
+      <p>${esc(f.explanation)}</p>
+      ${f.suggested_fix ? `<p class="ai-fix"><b>Suggested fix:</b> ${esc(f.suggested_fix)}</p>` : ""}
+      <p class="ai-action">${esc((ACTION_TEXT[f.action?.type] || ACTION_TEXT.none)(f.action || {}))}</p>
+      <details><summary>Evidence (${f.citations.length})</summary><p class="mono">${f.citations.map(esc).join("<br>")}</p></details>
+    </article>`).join("") : `<p class="ai-ok">No problems found in the current evidence.</p>`;
+  const notes = r.verification_notes?.length
+    ? `<details class="ai-notes"><summary>${r.verification_notes.length} finding(s) dropped or adjusted by verification</summary><ul>${r.verification_notes.map(n => `<li>${esc(n)}</li>`).join("")}</ul></details>` : "";
+  openAiWindow(meta, `<p class="ai-summary">${esc(r.summary)}</p>${findings}${notes}`, { fixes: r.recommendations_created > 0 });
+}
+async function runAiDiagnosis() {
+  const b = $("aiBtn"), started = Date.now();
   b.disabled = true; b.textContent = "Diagnosing…";
+  openAiWindow("Working…", `<p class="ai-wait"><span class="spinner" aria-hidden="true"></span>Asking the model about the current network state. This usually takes a few seconds.</p>`);
   try {
     const r = await post("/ai/diagnose");
-    const dropped = r.verification_notes.length ? ` · ${r.verification_notes.length} dropped or adjusted by verification` : "";
-    toast(`${r.summary} (${r.recommendations_created} new fix${r.recommendations_created === 1 ? "" : "es"}${dropped})`);
-    document.querySelector('[data-tab="recs"]').click();
+    renderAiResult(r, ((Date.now() - started) / 1000).toFixed(1));
     await refresh();
-  } catch (e) { toast(`AI diagnosis: ${e.message}`, true); }
-  finally { b.textContent = "AI diagnose"; gate(); }
-};
+  } catch (e) {
+    openAiWindow("Diagnosis failed", `<p class="ai-err">${esc(e.message)}</p>`, { retry: true });
+  } finally { b.textContent = "AI diagnose"; gate(); }
+}
+$("aiBtn").onclick = runAiDiagnosis;
+$("aiDlgRetry").onclick = runAiDiagnosis;
+$("aiDlgClose").onclick = $("aiDlgOk").onclick = () => $("aiDlg").close();
+$("aiDlgFixes").onclick = () => { showTab("recs"); $("aiDlg").close(); };
+document.addEventListener("keydown", e => { if (e.key === "Escape" && $("aiDlg").open) $("aiDlg").close(); });
 $("diagBtn").onclick = () => guard(async () => { const r = await post("/diagnose"); toast(`${r.recommendations_created} fixes generated`); });
 $("slider").oninput = e => +e.target.value === 0 ? setLive(true) : setLive(false, +e.target.value);
 $("histRange").onchange = e => {
@@ -156,16 +181,6 @@ $("histRange").onchange = e => {
 };
 $("knownThen").onchange = () => { if (!live) refresh(); };
 $("liveBtn").onclick = () => setLive(true);
-$("loginForm").onsubmit = async e => {
-  e.preventDefault();
-  try {
-    await login($("loginUser").value.trim(), $("loginPass").value);
-    $("loginPass").value = "";
-    $("loginDlg").close();
-    await startSession();
-  } catch (err) { showLogin(err.message); }
-};
-$("loginDlg").addEventListener("cancel", e => e.preventDefault()); // signing in is required
 $("logoutBtn").onclick = () => { logout(); showLogin(); };
 setUnauthorizedHandler(() => showLogin("Your session expired. Please sign in again."));
 document.addEventListener("visibilitychange", () => { if (!document.hidden && live) refresh(); });

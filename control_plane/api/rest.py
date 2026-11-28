@@ -100,6 +100,10 @@ def create_rest_app(db_dsn: str, elector: LeaderElector) -> FastAPI:
     @app.get("/", include_in_schema=False)
     def index():
         return FileResponse(UI_DIR / "index.html")
+
+    @app.get("/login", include_in_schema=False)
+    def login_page():
+        return FileResponse(UI_DIR / "login.html", headers={"Cache-Control": "no-cache"})
     peer_rest_url = (os.environ.get("PEER_REST_URL") or "").rstrip("/")
     peer_host = urlparse(peer_rest_url).hostname if peer_rest_url else None
 
@@ -1002,6 +1006,8 @@ def create_rest_app(db_dsn: str, elector: LeaderElector) -> FastAPI:
             "findings": len(result.get("findings", [])),
             "verification_notes": result.get("verification_notes", []),
             "model": result.get("model"),
+            # The verified findings themselves, for the console's result window.
+            "items": result.get("findings", []),
         }
 
     @app.get("/audit")

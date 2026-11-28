@@ -127,3 +127,35 @@ button.tile{cursor:pointer}button.tile:hover{background:var(--panel2)}
 button.link{background:none;border:0;color:var(--accent);padding:10px 0;font-size:13px}button.link:hover{text-decoration:underline}
 .small-inline{font-size:12px}
 .legend i.ln{display:inline-block;height:0;border-bottom:0;border-left:0;border-right:0}
+
+/* AI diagnosis result window (non-modal, stays until closed) */
+dialog.ai-dlg{position:fixed;inset:70px 24px auto auto;margin:0;z-index:40;width:min(480px,calc(100vw - 48px));max-height:calc(100vh - 110px);
+  display:none;flex-direction:column;padding:0;border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--ink);box-shadow:0 18px 48px rgba(0,0,0,.5)}
+dialog.ai-dlg[open]{display:flex}
+.ai-dlg-head{display:flex;align-items:center;justify-content:space-between;padding:14px 16px 4px}
+.ai-dlg-head h2{font-size:16px;font-weight:600}
+.ai-dlg-x{background:none;border:0;color:var(--mute);font-size:16px;padding:4px 8px}.ai-dlg-x:hover{color:var(--ink)}
+.ai-dlg-meta{padding:0 16px 8px;font-size:12px;color:var(--mute);border-bottom:1px solid var(--line)}
+.ai-dlg-body{overflow:auto;padding:12px 16px;display:grid;gap:12px}
+.ai-summary{font-size:14px;line-height:1.5}
+.ai-finding{border:1px solid var(--line);border-radius:8px;padding:10px 12px;display:grid;gap:6px;background:var(--panel2)}
+.ai-finding p{font-size:13px;line-height:1.45}
+.ai-fix,.ai-action{color:var(--mute)}.ai-action{font-size:12px}
+.ai-finding details summary,.ai-notes summary{cursor:pointer;font-size:12px;color:var(--accent)}
+.ai-notes ul{margin:6px 0 0 18px;font-size:12px;color:var(--mute)}
+.ai-ok{color:var(--ok)}.ai-err{color:var(--bad)}
+.ai-wait{display:flex;gap:10px;align-items:center;color:var(--mute)}
+.spinner{width:16px;height:16px;border-radius:50%;border:2px solid var(--line);border-top-color:var(--accent);animation:spin 1s linear infinite;flex:none}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.spinner{animation-duration:3s}}
+.ai-dlg-foot{display:flex;gap:8px;justify-content:flex-end;padding:10px 16px;border-top:1px solid var(--line)}
+
+/* standalone sign-in page */
+body.login-page{display:grid;place-items:center;min-height:100vh;background:radial-gradient(900px 500px at 50% 30%,#12283b 0%,#0b1621 60%,#08111a 100%)}
+.login-card{width:min(360px,90vw);display:grid;gap:18px;padding:28px;border:1px solid var(--line);border-radius:12px;background:var(--panel);box-shadow:0 18px 48px rgba(0,0,0,.45)}
+.login-card .brand{justify-content:center;margin:0}
+.login-card form{display:grid;gap:12px}
+.login-card h1{font-size:18px;font-weight:600}
+.login-card label{display:grid;gap:4px;font-size:13px;color:var(--mute)}
+.login-card input{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:9px}
+.login-card button{padding:9px}
