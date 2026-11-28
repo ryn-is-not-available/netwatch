@@ -1,12 +1,14 @@
-import logging
-import signal
-import threading
 
 from agent.collector import MetricsCollector
 from agent.config import AgentConfig
 from agent.heartbeat import HeartBeat
 from agent.publisher import TelemetryPublisher
 from agent.ring_buffer import RingBuffer
+from agent.prober import ActiveProber
+
+import logging
+import signal
+import threading
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,7 +39,16 @@ def main() -> None:
 
     collector = MetricsCollector(data_ip=cfg.data_ip)
     ring_buffer = RingBuffer(capacity=cfg.buffer_capacity)
-    heartbeat = HeartBeat(cfg, collector)
+    prober = ActiveProber(cfg)
+    heartbeat = HeartBeat(
+            cfg,
+            collector,
+            on_command=lambda cmd: (
+                prober.execute_trace_command(cmd.get("payload", {}))
+                if cmd.get("command_type") == "run_trace"
+                else None
+            ),
+        )
     publisher = TelemetryPublisher(cfg, collector, ring_buffer)
 
     threads = [
@@ -57,6 +68,12 @@ def main() -> None:
             target=publisher.run_publisher_forever,
             args=(stop_event,),
             name="telemetry-publisher",
+            daemon=True,
+        ),
+        threading.Thread(
+            target=prober.run_forever,
+            args=(stop_event,),
+            name="active-prober",
             daemon=True,
         ),
     ]

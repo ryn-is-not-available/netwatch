@@ -1,14 +1,18 @@
+from certs.client import load_certificate_from_file , load_private_key_from_file
+from shared import netwatch_pb2 , netwatch_pb2_grpc
 from agent.collector import MetricsCollector
 from agent.enroll import ensure_enrolled
-from agent.config import AgentConfig
-from shared import netwatch_pb2 , netwatch_pb2_grpc
-from certs.client import load_certificate_from_file , load_private_key_from_file
-from pathlib import Path
 from datetime import datetime,timezone
-import time
-import grpc
+from agent.config import AgentConfig
+from typing import Callable , Any
+from pathlib import Path
+
 import threading
 import logging
+import time
+import grpc
+import json
+
 
 logger = logging.getLogger("netwatch.agent.heartbeat")
 
@@ -17,7 +21,10 @@ class HeartBeat:
     def __init__(
         self,
         config : AgentConfig,
-        collector : MetricsCollector):
+        collector : MetricsCollector,
+        on_command: Callable[[dict[str, Any]], None] | None = None,
+        ) -> None:
+        self._on_command = on_command
         self._metricCollector = collector
         self._config = config
         self.current_leader_epoch = 0
@@ -95,15 +102,22 @@ class HeartBeat:
             raise RuntimeError(f"All control planes unreachable for heartbeat: {last_err}")
 
     def runForever(self, stop_event: threading.Event) -> None:
-        logger.info(
+            logger.info(
                 "Starting heartbeat loop every %.1fs for node_id=%s",
                 self._config.heartbeat_interval_s,
-                self._config.node_id
+                self._config.node_id,
             )
-        while not stop_event.is_set():
-            try:
-                self.heartbeatClient();
-            except Exception as exc:
-                logger.error("Heartbeat tick failed: %s", exc)
-            stop_event.wait(self._config.heartbeat_interval_s)
+            while not stop_event.is_set():
+                try:
+                    ack = self.heartbeatClient()
+                    if self._on_command and ack.message.startswith("{"):
+                        try:
+                            data = json.loads(ack.message)
+                            for cmd in data.get("commands", []):
+                                self._on_command(cmd)
+                        except Exception as exc:
+                            logger.error("Failed to dispatch command from heartbeat Ack: %s", exc)
+                except Exception as exc:
+                    logger.error("Heartbeat tick failed: %s", exc)
+                stop_event.wait(self._config.heartbeat_interval_s)
             
