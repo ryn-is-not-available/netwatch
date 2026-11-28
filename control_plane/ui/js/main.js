@@ -3,7 +3,7 @@ import { api, login, post, patch } from "./api.js";
 import { initGraph, renderGraph, traced, nodeCard } from "./graph.js";
 import { initPanels, renderPanels, handlers } from "./panels.js";
 
-let live = true, at = null, busy = false;
+let live = true, at = null, busy = false, authed = false;
 
 function fillSelects(nodes) {
   const ids = nodes.map(n => n.node_id);
@@ -20,7 +20,7 @@ function gate() {
   $("revokeBtn").disabled = r !== "admin";
 }
 async function refresh() {
-  if (busy) return; busy = true;
+  if (busy || !authed) return; busy = true;
   try {
     const h = await api("/health");
     $("leader").textContent = `${h.instance_id} · ${h.is_leader ? "leader" : "standby"} · epoch ${h.leader_epoch}`;
@@ -76,4 +76,4 @@ $("liveBtn").onclick = () => setLive(true);
 $("role").onchange = () => guard(async () => { await login($("role").value); gate(); });
 document.addEventListener("visibilitychange", () => { if (!document.hidden && live) refresh(); });
 setInterval(() => { if (live && !document.hidden) refresh(); }, 3000);
-(async () => { try { await login("admin"); gate(); await refresh(); } catch (e) { toast(`Login failed: ${e.message}`, true); } })();
+(async () => { try { await login("admin"); authed = true; gate(); await refresh(); } catch (e) { toast(`Login failed: ${e.message}`, true); } })();
