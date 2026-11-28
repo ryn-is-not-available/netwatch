@@ -135,6 +135,7 @@ services:
       NATS_URL: nats://control_plane:${NATS_CONTROL_PLANE_PASSWORD:-dev_cp_pass}@${NATS_HOST:-172.28.0.31}:${NATS_PORT:-4222}
       JOIN_TOKEN: ${JOIN_TOKEN:-netwatch-dev-join-token-2026}
       INSTANCE_ID: control-plane-1
+    ports: ["8000:8000"]
     networks:
       MGMT_NET:
         ipv4_address: 172.28.0.32
@@ -154,6 +155,7 @@ services:
       NATS_URL: nats://control_plane:${NATS_CONTROL_PLANE_PASSWORD:-dev_cp_pass}@${NATS_HOST:-172.28.0.31}:${NATS_PORT:-4222}
       JOIN_TOKEN: ${JOIN_TOKEN:-netwatch-dev-join-token-2026}
       INSTANCE_ID: control-plane-2
+    ports: ["8001:8000"]
     networks:
       MGMT_NET:
         ipv4_address: 172.28.0.33
