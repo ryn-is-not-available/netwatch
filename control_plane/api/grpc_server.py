@@ -16,6 +16,7 @@ import os
 from nats.js.api import RetentionPolicy, StorageType, StreamConfig
 from control_plane.domain.alert_evaluator import AlertEngine
 from control_plane.domain.lease_manager import LeaseManager
+from control_plane.domain.link_history import observe_link
 from control_plane.adapters.elector import LeaderElector
 from control_plane.api.rest import create_rest_app
 from shared import netwatch_pb2, netwatch_pb2_grpc
@@ -250,7 +251,6 @@ class ControlServiceServicer(netwatch_pb2_grpc.ControlServiceServicer):
             if request.HasField("timestamp")
             else datetime.now(timezone.utc)
         )
-        link_status = "up" if (request.success and request.packet_loss_pct <= 2.0) else "degraded"
 
         trace_uuid: str | None = None
         if request.probe_type == "trace" and request.probe_id:
@@ -354,41 +354,16 @@ class ControlServiceServicer(netwatch_pb2_grpc.ControlServiceServicer):
                 src_status not in INACTIVE_NODE_STATES and dst_status not in INACTIVE_NODE_STATES
             )
             if link_mutable and self.elector.is_leader:
-                epoch = self.elector.epoch
-                updated = self.elector.fenced_execute(
+                # Versioned, bitemporal update (see control_plane/domain/link_history.py).
+                observe_link(
                     conn,
-                    """
-                    UPDATE topology_links
-                    SET status = %s,
-                        latency_ms = %s,
-                        packet_loss_pct = %s
-                    WHERE src_node_id = %s
-                    AND dst_node_id = %s
-                    AND upper_inf(valid_during);
-                    """,
-                    (link_status, request.latency_ms, request.packet_loss_pct, src_node_id, dst_node_id),
-                    expected_epoch=None,
+                    self.elector,
+                    src_node_id,
+                    dst_node_id,
+                    request.success,
+                    probe_loss_pct=request.packet_loss_pct,
+                    probe_latency_ms=request.latency_ms if request.success else None,
                 )
-                # A failed probe can degrade an existing link but never opens a new one.
-                if updated == 0 and request.success:
-                    self.elector.fenced_execute(
-                        conn,
-                        """
-                        INSERT INTO topology_links (
-                            src_node_id, dst_node_id, status,
-                            latency_ms, packet_loss_pct,
-                            valid_during, recorded_during
-                        )
-                        VALUES (
-                            %s, %s, %s, %s, %s,
-                            tstzrange(NOW(), NULL, '[)'),
-                            tstzrange(NOW(), NULL, '[)')
-                        )
-                        ON CONFLICT DO NOTHING;
-                        """,
-                        (src_node_id, dst_node_id, link_status, request.latency_ms, request.packet_loss_pct),
-                        expected_epoch=None,
-                    )
             conn.commit()
 
         return netwatch_pb2.Ack(

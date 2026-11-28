@@ -159,8 +159,8 @@ class TopologyGraphEngine:
                 LEFT JOIN probe_results pr
                   ON pr.src_node_id = tl.src_node_id
                  AND pr.dst_node_id = tl.dst_node_id
-                 AND pr.time >= NOW() - make_interval(secs => %s)
-                WHERE upper_inf(tl.valid_during)
+                 AND pr.time >= GREATEST(NOW() - make_interval(secs => %s), lower(tl.valid_during))
+                WHERE upper_inf(tl.valid_during) AND upper_inf(tl.recorded_during)
                 GROUP BY tl.src_node_id, tl.dst_node_id, tl.status, tl.latency_ms, tl.packet_loss_pct;
                 """,
                 (window_seconds,),

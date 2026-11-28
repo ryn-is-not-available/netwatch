@@ -16,6 +16,7 @@ import psycopg
 from pydantic import BaseModel, Field
 
 from control_plane.adapters.elector import LeaderElector
+from control_plane.domain.link_history import CLOSE_FOR_NODE_SQL
 from control_plane.domain.graph_engine import (
     DeclaredLink,
     ObservedLink,
@@ -290,23 +291,38 @@ def create_rest_app(db_dsn: str, elector: LeaderElector) -> FastAPI:
                     DeclaredLink(row[0], row[1], float(row[2])) for row in declared_rows
                 ]
 
+                # Links as they were at `at`, as NetWatch believed at `known_at`. Their quality is
+                # measured from the raw probe series in the 30s before `at`, limited to the link's
+                # own segment and to samples already known at `known_at`.
                 cur.execute(
                     """
-                    SELECT link_id::text, src_node_id, dst_node_id, status, latency_ms, packet_loss_pct
-                    FROM topology_links
-                    WHERE valid_during @> %s::timestamptz AND recorded_during @> %s::timestamptz;
+                    SELECT tl.link_id::text, tl.src_node_id, tl.dst_node_id, tl.status,
+                           COALESCE(AVG(pr.latency_ms) FILTER (WHERE pr.success), tl.latency_ms, 0.0),
+                           COALESCE(AVG(pr.packet_loss_pct), tl.packet_loss_pct, 0.0)
+                    FROM topology_links tl
+                    LEFT JOIN probe_results pr
+                      ON pr.src_node_id = tl.src_node_id
+                     AND pr.dst_node_id = tl.dst_node_id
+                     AND pr.time > GREATEST(%(at)s::timestamptz - interval '30 seconds', lower(tl.valid_during))
+                     AND pr.time <= LEAST(%(at)s::timestamptz, %(known)s::timestamptz)
+                    WHERE tl.valid_during @> %(at)s::timestamptz
+                      AND tl.recorded_during @> %(known)s::timestamptz
+                    GROUP BY tl.link_id, tl.src_node_id, tl.dst_node_id, tl.status,
+                             tl.latency_ms, tl.packet_loss_pct;
                     """,
-                    (at_ts, known_at_ts),
+                    {"at": at_ts, "known": known_at_ts},
                 )
-                observed_rows = cur.fetchall()
+                observed_rows = [
+                    (r[0], r[1], r[2], r[3], float(r[4]), float(r[5])) for r in cur.fetchall()
+                ]
                 observed_links = [
                     {
                         "link_id": row[0],
                         "src_node_id": row[1],
                         "dst_node_id": row[2],
                         "status": row[3],
-                        "latency_ms": float(row[4] or 0.0),
-                        "packet_loss_pct": float(row[5] or 0.0),
+                        "latency_ms": row[4],
+                        "packet_loss_pct": row[5],
                     }
                     for row in observed_rows
                 ]
@@ -488,14 +504,8 @@ def create_rest_app(db_dsn: str, elector: LeaderElector) -> FastAPI:
                 if cur.fetchone() is None:
                     raise HTTPException(status_code=404, detail="Node not found")
 
-                cur.execute(
-                    "UPDATE topology_links "
-                    "SET status = 'down', "
-                    "valid_during = tstzrange(lower(valid_during), NOW(), '[)') "
-                    "WHERE (src_node_id = %s OR dst_node_id = %s) "
-                    "AND upper_inf(valid_during);",
-                    (node_id, node_id),
-                )
+                # Close its links as a new bitemporal version (history is kept).
+                cur.execute(CLOSE_FOR_NODE_SQL, (node_id, node_id))
 
             _write_audit(
                 conn,

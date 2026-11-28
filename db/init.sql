@@ -58,16 +58,19 @@ CREATE TABLE topology_links (
     valid_during TSTZRANGE NOT NULL,
     recorded_during TSTZRANGE NOT NULL,
 
+    -- Bitemporal: two rows for a link may overlap in valid time only if they were believed at
+    -- different times (a retired belief and the versions that replaced it).
     CONSTRAINT no_overlapping_links EXCLUDE USING gist (
         src_node_id WITH =,
         dst_node_id WITH =,
-        valid_during WITH &&
+        valid_during WITH &&,
+        recorded_during WITH &&
     ),
 
     CONSTRAINT no_self_links CHECK (src_node_id <> dst_node_id)
 );
 
-CREATE INDEX idx_topology_links_temporal ON topology_links USING gist (src_node_id,dst_node_id,valid_during);
+CREATE INDEX idx_topology_links_temporal ON topology_links USING gist (src_node_id, dst_node_id, valid_during, recorded_during);
 
 -- Operator-declared intent (POST /topology/desired), diffed against topology_links for drift.
 CREATE TABLE desired_topology_links (

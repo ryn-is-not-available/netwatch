@@ -6,6 +6,7 @@ from typing import Any
 import psycopg
 
 from control_plane.adapters.elector import LeaderElector
+from control_plane.domain.link_history import CLOSE_FOR_INACTIVE_NODES_SQL
 
 logger = logging.getLogger("netwatch.control_plane.lease_manager")
 
@@ -107,16 +108,8 @@ class LeaseManager:
         )
 
     def _close_links_for_offline_nodes(self, conn: psycopg.Connection[Any], epoch: int) -> int:
-        close_sql = """
-        UPDATE topology_links
-        SET status = 'down',
-            valid_during = tstzrange(lower(valid_during), NOW(), '[)')
-        WHERE upper_inf(valid_during)
-          AND (
-              src_node_id IN (SELECT node_id FROM nodes WHERE health_status IN ('offline', 'revoked'))
-              OR dst_node_id IN (SELECT node_id FROM nodes WHERE health_status IN ('offline', 'revoked'))
-          );
-        """
+        # Ends the links' valid time as a new version; the old belief is kept (bitemporal).
+        close_sql = CLOSE_FOR_INACTIVE_NODES_SQL
         return self._elector.fenced_execute(
             conn,
             close_sql,
