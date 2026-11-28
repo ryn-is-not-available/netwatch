@@ -122,6 +122,9 @@ CREATE TABLE recommendations (
     status VARCHAR(255) NOT NULL DEFAULT 'pending'
         CHECK (status IN ('pending', 'applied', 'dismissed')),
 
+    -- What "Apply" does, e.g. {"type":"declare_link","src":..,"dst":..} or {"type":"run_trace",..}.
+    action JSONB,
+
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     applied_at TIMESTAMPTZ
 );

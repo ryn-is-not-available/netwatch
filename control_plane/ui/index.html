@@ -24,9 +24,6 @@
     <button id="traceBtn" class="primary">Run trace</button>
   </fieldset>
   <fieldset><legend>Analysis</legend><button id="diagBtn">Diagnose drift</button></fieldset>
-  <fieldset><legend>Node control</legend>
-    <select id="revokeSel" aria-label="Node to revoke"></select><button id="revokeBtn" class="danger">Revoke</button>
-  </fieldset>
 </div>
 
 <main class="main">
@@ -38,11 +35,12 @@
       <span><i class="ln drift"></i>Drift</span><span><i class="ln trace"></i>Traced</span>
     </div>
     <div class="zoom"><button id="fit" title="Fit to view" aria-label="Fit to view">Fit</button><button id="relayout" title="Re-run layout">Relayout</button></div>
-    <div id="inspector" class="inspector" hidden></div>
     <div class="timebar">
       <b>History</b>
+      <select id="histRange" aria-label="History range"><option value="30">30 min</option><option value="360">6 h</option><option value="1440">24 h</option></select>
       <input id="slider" type="range" min="-30" max="0" step="1" value="0" aria-label="Minutes before now">
       <output id="timeLabel">Now</output>
+      <label class="known" title="Show what NetWatch believed at that moment, rather than today's corrected view of it"><input id="knownThen" type="checkbox" checked> as known then</label>
       <button id="liveBtn">Back to live</button>
     </div>
   </section>
@@ -54,6 +52,9 @@
       <button role="tab" data-tab="recs" aria-selected="false">Fixes <i id="n-recs">0</i></button>
       <button role="tab" data-tab="alerts" aria-selected="false">Alerts <i id="n-alerts">0</i></button>
       <button role="tab" data-tab="audit" aria-selected="false">Audit</button>
+      <button role="tab" data-tab="node" aria-selected="false">Node</button>
+      <button role="tab" data-tab="topo" aria-selected="false">Topology</button>
+      <button role="tab" data-tab="users" id="usersTab" aria-selected="false" hidden>Users</button>
     </div>
     <div id="panel" class="panel" role="tabpanel"></div>
   </aside>

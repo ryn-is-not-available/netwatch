@@ -1,25 +1,207 @@
-import { $, esc } from "./util.js";
-export const handlers = { patchRec: null };
-let data = { drift: [], recs: [], alerts: [], audit: [] }, tab = "drift", canAct = true;
-const empty = t => `<div class="item muted">${t}</div>`;
-const dis = () => canAct ? "" : "disabled";
-const views = {
-  drift: () => data.drift.length ? data.drift.map(d => `<div class="item"><b>${esc(d.src_node_id)} → ${esc(d.dst_node_id)}</b> <span class="pill bad">${esc(d.drift_type)}</span><div class="mono">${esc(d.details)}</div></div>`).join("") : empty("Observed links match the declared topology."),
-  recs: () => data.recs.length ? data.recs.map(r => `<div class="item"><b>${esc(r.diagnosis)}</b><div class="muted">${esc(r.suggested_fix)}</div><div class="mono">${esc(r.status)}</div>${r.status === "pending" ? `<div class="row"><button class="primary" data-rec="${esc(r.recommendation_id)}" data-s="applied" ${dis()}>Apply fix</button><button data-rec="${esc(r.recommendation_id)}" data-s="dismissed" ${dis()}>Dismiss</button></div>` : ""}</div>`).join("") : empty("No fixes yet. Run Diagnose drift to generate them."),
-  alerts: () => data.alerts.length ? data.alerts.slice(0, 20).map(a => `<div class="item"><span class="pill ${a.severity === "critical" ? "bad" : "warn"}">${esc(a.status)}</span> <b>${esc(a.affected_node_id || "mesh")}</b><div class="muted">${esc(a.message)}</div></div>`).join("") : empty("No active alerts."),
-  audit: () => data.audit.length ? data.audit.slice(0, 20).map(u => `<div class="item"><b>${esc(u.action_type)}</b><div class="mono">${esc(u.actor_id)} → ${esc(u.target_entity)}</div></div>`).join("") : empty("No audit entries."),
+import { $, esc, toast } from "./util.js";
+import { api, post, patch } from "./api.js";
+import { lineChart, fmtPct, fmtRate } from "./charts.js";
+
+// Validated categorical steps for the dark surface (dataviz skill palette; checked against #16283a).
+const SERIES = { blue: "#3987e5", orange: "#d95926" };
+const RANK = { viewer: 1, operator: 2, admin: 3 };
+
+export const handlers = { refresh: async () => {} };
+let data = { drift: [], recs: [], alerts: [], audit: [], nodes: [], declared: [], observed: [] };
+let tab = "drift", role = "viewer", me = "";
+let selectedNode = null, metricsMinutes = 15, metricsTimer = null, draft = null;
+let newLink = { src: "", dst: "" }; // the editor's add-row choice survives re-renders
+// Passive tabs re-render on every refresh; interactive ones only on their own events,
+// so a refresh never wipes a form the user is typing in.
+const PASSIVE = new Set(["drift", "recs", "alerts", "audit"]);
+
+const can = r => RANK[role] >= RANK[r];
+const empty = t => `<div class="item muted">${esc(t)}</div>`;
+const dis = r => (can(r) ? "" : "disabled");
+const statusPill = s => `<span class="pill ${s === "healthy" ? "ok" : s === "degraded" || s === "enrolled" ? "warn" : "bad"}">${esc(s)}</span>`;
+const ago = iso => {
+  if (!iso) return "never";
+  const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
+  return s < 90 ? `${s}s ago` : `${Math.round(s / 60)} min ago`;
 };
-export function renderPanels(d, act) {
-  data = d; canAct = act;
-  ["drift", "recs", "alerts"].forEach(k => $(`n-${k}`).textContent = d[k].length);
-  $("panel").innerHTML = views[tab]();
+const actionLabel = a => (a?.type === "declare_link" ? "Declare link" : a?.type === "run_trace" ? "Run trace" : "Mark applied");
+
+const views = {
+  drift: () => data.drift.length
+    ? data.drift.map(d => `<div class="item"><b>${esc(d.src_node_id)} → ${esc(d.dst_node_id)}</b> <span class="pill bad">${esc(d.drift_type)}</span><div class="mono">${esc(d.details)}</div></div>`).join("")
+    : empty("Observed links match the declared topology."),
+  recs: () => data.recs.length
+    ? data.recs.map(r => `<div class="item"><b>${esc(r.diagnosis)}</b><div class="muted">${esc(r.suggested_fix)}</div><div class="mono">${esc(r.status)}</div>${r.status === "pending"
+      ? `<div class="row"><button class="primary" data-act="rec" data-id="${esc(r.recommendation_id)}" data-s="applied" ${dis("operator")}>${actionLabel(r.action)}</button><button data-act="rec" data-id="${esc(r.recommendation_id)}" data-s="dismissed" ${dis("operator")}>Dismiss</button></div>` : ""}</div>`).join("")
+    : empty("No fixes yet. Run Diagnose drift to generate them."),
+  alerts: () => data.alerts.length
+    ? data.alerts.slice(0, 30).map(a => `<div class="item"><span class="pill ${a.status === "resolved" ? "" : a.severity === "critical" ? "bad" : "warn"}">${esc(a.status)}</span> <b>${esc(a.affected_node_id || "mesh")}</b><div class="muted">${esc(a.message)}</div>${a.status === "new"
+      ? `<div class="row"><button data-act="ack" data-id="${esc(a.alert_id)}" ${dis("operator")}>Acknowledge</button></div>` : ""}</div>`).join("")
+    : empty("No alerts."),
+  audit: () => data.audit.length
+    ? data.audit.slice(0, 30).map(u => `<div class="item"><b>${esc(u.action_type)}</b><div class="mono">${esc(u.actor_id)} → ${esc(u.target_entity)} · ${esc(u.ip_address)}</div></div>`).join("")
+    : empty("No audit entries."),
+  node: renderNode,
+  topo: renderTopo,
+  users: renderUsers,
+};
+
+// --- Node tab: status, actions and metric charts --------------------------------------------
+function renderNode() {
+  const n = data.nodes.find(x => x.node_id === selectedNode);
+  if (!n) return empty("Select a node on the graph to see its metrics.");
+  return `<div class="node-head"><h3>${esc(n.node_id)} ${statusPill(n.health_status)}</h3>
+    <dl class="kv"><dt>MGMT IP</dt><dd>${esc(n.ip_address)}</dd><dt>Last heartbeat</dt><dd>${esc(ago(n.last_heartbeat))}</dd></dl>
+    <div class="row">${n.health_status === "revoked"
+      ? `<button data-act="reinstate" ${dis("admin")}>Reinstate</button>`
+      : `<button class="danger" data-act="revoke" ${dis("admin")}>Revoke</button>`}
+      <label class="range">Range <select id="metricsRange">${[[15, "15 min"], [60, "1 h"], [360, "6 h"], [1440, "24 h"]]
+        .map(([v, l]) => `<option value="${v}" ${v === metricsMinutes ? "selected" : ""}>${l}</option>`).join("")}</select></label></div></div>
+    <div id="chartCpu" class="chart-slot"></div><div id="chartMem" class="chart-slot"></div><div id="chartNet" class="chart-slot"></div>`;
 }
+
+async function loadMetrics() {
+  if (tab !== "node" || !selectedNode) return;
+  const slots = ["chartCpu", "chartMem", "chartNet"].map($).filter(Boolean);
+  slots.forEach(s => s.classList.add("loading")); // refetch keeps the frame, dimmed
+  try {
+    const m = await api(`/nodes/${encodeURIComponent(selectedNode)}/metrics?minutes=${metricsMinutes}`);
+    if (tab !== "node" || m.node_id !== selectedNode) return;
+    lineChart($("chartCpu"), { title: "CPU", points: m.points, series: [{ key: "cpu_pct", name: "CPU", color: SERIES.blue }], format: fmtPct, max: 100 });
+    lineChart($("chartMem"), { title: "Memory", points: m.points, series: [{ key: "mem_pct", name: "Memory", color: SERIES.blue }], format: fmtPct, max: 100 });
+    lineChart($("chartNet"), {
+      title: "DATA_NET throughput", points: m.points, format: fmtRate,
+      series: [{ key: "rx_bps", name: "rx", color: SERIES.blue }, { key: "tx_bps", name: "tx", color: SERIES.orange }],
+    });
+  } catch (e) { toast(`Metrics failed: ${e.message}`, true); }
+  finally { slots.forEach(s => s.classList.remove("loading")); }
+}
+
+// --- Topology tab: edit the declared (desired) topology ---------------------------------------
+const key = l => `${l.src_node_id}->${l.dst_node_id}`;
+function renderTopo() {
+  if (!draft) draft = data.declared.map(l => ({ ...l }));
+  const ids = data.nodes.map(n => n.node_id);
+  if (!ids.includes(newLink.src)) newLink.src = ids[0] ?? "";
+  if (!ids.includes(newLink.dst)) newLink.dst = ids[1] ?? ids[0] ?? "";
+  const opts = sel => ids.map(i => `<option ${i === sel ? "selected" : ""}>${esc(i)}</option>`).join("");
+  const observedOnly = data.observed.filter(o => !draft.some(d => key(d) === key(o)));
+  const ro = can("operator") ? "" : "disabled";
+  return `<p class="muted small">Declared links are the intended topology; drift compares them with what probes observe.</p>
+    <table class="topo"><thead><tr><th>Link</th><th>Cost</th><th>SLO ms</th><th></th></tr></thead><tbody>
+    ${draft.length ? draft.map((l, i) => `<tr><td class="mono">${esc(l.src_node_id)} → ${esc(l.dst_node_id)}</td>
+      <td><input type="number" min="0" step="0.5" value="${esc(l.admin_cost)}" data-act="edit" data-i="${i}" data-f="admin_cost" aria-label="Cost of ${esc(key(l))}" ${ro}></td>
+      <td><input type="number" min="0" step="0.5" value="${esc(l.expected_latency_ms)}" data-act="edit" data-i="${i}" data-f="expected_latency_ms" aria-label="Latency SLO of ${esc(key(l))}" ${ro}></td>
+      <td><button data-act="del" data-i="${i}" aria-label="Remove ${esc(key(l))}" ${ro}>✕</button></td></tr>`).join("")
+      : `<tr><td colspan="4" class="muted">No declared links.</td></tr>`}
+    </tbody></table>
+    <div class="row wrap"><select id="newSrc" aria-label="New link source">${opts(newLink.src)}</select><span aria-hidden="true">→</span>
+      <select id="newDst" aria-label="New link destination">${opts(newLink.dst)}</select>
+      <button data-act="add" ${ro}>Add</button></div>
+    <div class="row wrap"><button data-act="adopt" ${ro} ${observedOnly.length ? "" : "disabled"}>Declare all observed (${observedOnly.length})</button>
+      <button data-act="reset">Reset</button><button class="primary" data-act="save" ${ro}>Save</button></div>`;
+}
+
+// --- Users tab (admin) --------------------------------------------------------------------------
+let users = [];
+function renderUsers() {
+  if (!can("admin")) return empty("Only admins can manage users.");
+  const roles = ["viewer", "operator", "admin"];
+  return `<table class="topo"><thead><tr><th>User</th><th>Role</th><th>Status</th></tr></thead><tbody>
+    ${users.map(u => `<tr><td class="mono">${esc(u.username)}</td>
+      <td><select data-act="role" data-u="${esc(u.username)}" aria-label="Role of ${esc(u.username)}" ${u.username === me ? "disabled" : ""}>
+        ${roles.map(r => `<option ${r === u.role ? "selected" : ""}>${r}</option>`).join("")}</select></td>
+      <td><button data-act="toggle" data-u="${esc(u.username)}" ${u.username === me ? "disabled" : ""}>${u.disabled ? "Enable" : "Disable"}</button></td></tr>`).join("")}
+    </tbody></table>
+    <form id="newUser" class="new-user"><h4>Add user</h4>
+      <input name="username" placeholder="username" aria-label="New username" required pattern="[A-Za-z0-9_.@-]+">
+      <input name="password" type="password" placeholder="password (8+ chars)" aria-label="New user password" minlength="8" required autocomplete="new-password">
+      <select name="role" aria-label="New user role">${roles.map(r => `<option>${r}</option>`).join("")}</select>
+      <button class="primary" type="submit">Create</button></form>`;
+}
+
+async function loadUsers() {
+  try { users = await api("/users"); } catch (e) { toast(e.message, true); }
+  if (tab === "users") $("panel").innerHTML = renderUsers();
+}
+
+// --- wiring ---------------------------------------------------------------------------------------
+async function run(fn, ok) {
+  try { const r = await fn(); if (ok) toast(typeof ok === "function" ? ok(r) : ok); await handlers.refresh(); return r; }
+  catch (e) { toast(e.message, true); }
+}
+
+function show(next) {
+  tab = next;
+  document.querySelectorAll(".tabs button").forEach(x => x.setAttribute("aria-selected", x.dataset.tab === tab));
+  $("panel").innerHTML = views[tab]();
+  clearInterval(metricsTimer);
+  if (tab === "node") { loadMetrics(); metricsTimer = setInterval(loadMetrics, 15000); }
+  if (tab === "users") loadUsers();
+}
+
+export function selectNode(nodeId) {
+  selectedNode = nodeId;
+  if (nodeId) show("node");
+}
+
+export function renderPanels(d, userRole, username) {
+  data = d; role = userRole; me = username;
+  ["drift", "recs", "alerts"].forEach(k => ($(`n-${k}`).textContent = k === "alerts" ? d.alerts.filter(a => a.status === "new").length : d[k].length));
+  $("usersTab").hidden = !can("admin");
+  if (PASSIVE.has(tab)) $("panel").innerHTML = views[tab]();
+  if (tab === "node") {
+    const n = data.nodes.find(x => x.node_id === selectedNode);
+    const head = document.querySelector(".node-head h3");
+    if (n && head) head.innerHTML = `${esc(n.node_id)} ${statusPill(n.health_status)}`;
+  }
+}
+
 export function initPanels() {
-  document.querySelector(".tabs").onclick = e => {
-    const b = e.target.closest("[data-tab]"); if (!b) return;
-    tab = b.dataset.tab;
-    document.querySelectorAll(".tabs button").forEach(x => x.setAttribute("aria-selected", x === b));
-    $("panel").innerHTML = views[tab]();
-  };
-  $("panel").onclick = e => { const b = e.target.closest("[data-rec]"); if (b) handlers.patchRec(b.dataset.rec, b.dataset.s); };
+  document.querySelector(".tabs").onclick = e => { const b = e.target.closest("[data-tab]"); if (b) show(b.dataset.tab); };
+  const panel = $("panel");
+
+  panel.addEventListener("click", e => {
+    const b = e.target.closest("button[data-act]");
+    if (!b) return;
+    const { act, id, i, u } = b.dataset;
+    if (act === "rec") run(() => patch(`/recommendations/${id}`, { status: b.dataset.s }),
+      r => (r.result?.trace_id ? `Trace started (${r.result.trace_id.slice(0, 8)}…)` : r.result?.declared_link ? `Declared ${r.result.declared_link}` : `Fix ${r.status}`));
+    if (act === "ack") run(() => post(`/alerts/${id}/ack`), "Alert acknowledged");
+    if (act === "revoke" && confirm(`Revoke ${selectedNode}? It will be cut off from the mesh.`))
+      run(() => post(`/nodes/${encodeURIComponent(selectedNode)}/revoke`), `${selectedNode} revoked`).then(() => show("node"));
+    if (act === "reinstate") run(() => post(`/nodes/${encodeURIComponent(selectedNode)}/reinstate`), `${selectedNode} reinstated; it re-enrolls on its next heartbeat`).then(() => show("node"));
+    if (act === "del") { draft.splice(+i, 1); panel.innerHTML = renderTopo(); }
+    if (act === "add") {
+      const src = $("newSrc").value, dst = $("newDst").value;
+      if (src === dst) return toast("A link needs two different nodes.", true);
+      if (draft.some(l => l.src_node_id === src && l.dst_node_id === dst)) return toast("That link is already declared.", true);
+      draft.push({ src_node_id: src, dst_node_id: dst, admin_cost: 1, expected_latency_ms: 5 });
+      panel.innerHTML = renderTopo();
+    }
+    if (act === "adopt") {
+      data.observed.filter(o => !draft.some(d => key(d) === key(o)))
+        .forEach(o => draft.push({ src_node_id: o.src_node_id, dst_node_id: o.dst_node_id, admin_cost: 1, expected_latency_ms: 5 }));
+      panel.innerHTML = renderTopo();
+    }
+    if (act === "reset") { draft = null; panel.innerHTML = renderTopo(); }
+    if (act === "save") run(() => post("/topology/desired", { links: draft, replace: true }), r => `Saved ${r.stored} declared link(s)`).then(() => { draft = null; if (tab === "topo") panel.innerHTML = renderTopo(); });
+    if (act === "toggle") { const usr = users.find(x => x.username === u); run(() => patch(`/users/${encodeURIComponent(u)}`, { disabled: !usr.disabled }), `${u} ${usr.disabled ? "enabled" : "disabled"}`).then(loadUsers); }
+  });
+
+  panel.addEventListener("change", e => {
+    const t = e.target;
+    if (t.id === "metricsRange") { metricsMinutes = +t.value; loadMetrics(); }
+    if (t.id === "newSrc") newLink.src = t.value;
+    if (t.id === "newDst") newLink.dst = t.value;
+    if (t.dataset.act === "edit") draft[+t.dataset.i][t.dataset.f] = Math.max(0, +t.value || 0);
+    if (t.dataset.act === "role") run(() => patch(`/users/${encodeURIComponent(t.dataset.u)}`, { role: t.value }), `${t.dataset.u} is now ${t.value}`).then(loadUsers);
+  });
+
+  panel.addEventListener("submit", e => {
+    if (e.target.id !== "newUser") return;
+    e.preventDefault();
+    const f = new FormData(e.target);
+    run(() => post("/users", { username: f.get("username"), password: f.get("password"), role: f.get("role") }), `Created ${f.get("username")}`).then(loadUsers);
+  });
 }

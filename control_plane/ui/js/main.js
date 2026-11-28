@@ -1,13 +1,13 @@
 import { $, esc, toast } from "./util.js";
 import { api, login, logout, post, patch, setUnauthorizedHandler } from "./api.js";
-import { initGraph, renderGraph, traced, nodeCard } from "./graph.js";
-import { initPanels, renderPanels, handlers } from "./panels.js";
+import { initGraph, renderGraph, traced } from "./graph.js";
+import { initPanels, renderPanels, handlers, selectNode } from "./panels.js";
 
 let live = true, at = null, busy = false, me = null; // me = {username, role} once signed in
 
 function fillSelects(nodes) {
   const ids = nodes.map(n => n.node_id);
-  [["src", 0], ["dst", ids.length - 1], ["revokeSel", 0]].forEach(([id, def]) => {
+  [["src", 0], ["dst", ids.length - 1]].forEach(([id, def]) => {
     const s = $(id), prev = s.value;
     if ([...s.options].map(o => o.value).join() === ids.join()) return;
     s.innerHTML = ids.map(i => `<option>${esc(i)}</option>`).join("");
@@ -17,7 +17,6 @@ function fillSelects(nodes) {
 function gate() {
   const r = me?.role ?? "viewer";
   $("diagBtn").disabled = $("traceBtn").disabled = r === "viewer";
-  $("revokeBtn").disabled = r !== "admin";
 }
 function showUser() {
   $("who").textContent = `${me.username} · ${me.role}`;
@@ -46,20 +45,28 @@ async function refresh() {
     const h = await api("/health");
     $("leader").textContent = `${h.instance_id} · ${h.is_leader ? "leader" : "standby"} · epoch ${h.leader_epoch}`;
     $("leader").className = "pill " + (h.is_leader ? "ok" : "warn");
-    const url = !live && at ? `/topology?at=${encodeURIComponent(at)}&known_at=${encodeURIComponent(at)}` : "/topology";
+    // History: `at` picks the moment; "as known then" also sets known_at, showing what NetWatch
+    // believed at that moment instead of today's corrected view of it (bitemporal history).
+    const url = !live && at
+      ? `/topology?at=${encodeURIComponent(at)}${$("knownThen").checked ? `&known_at=${encodeURIComponent(at)}` : ""}`
+      : "/topology";
     const [topo, alerts, recs, audit] = await Promise.all([api(url), api("/alerts"), api("/recommendations"), api("/audit")]);
     fillSelects(topo.nodes || []); renderGraph(topo);
-    renderPanels({ drift: topo.drift || [], recs, alerts, audit }, me.role !== "viewer");
+    renderPanels({
+      drift: topo.drift || [], recs, alerts, audit,
+      nodes: topo.nodes || [], declared: topo.declared_links || [], observed: topo.observed_links || [],
+    }, me.role, me.username);
   } catch (e) { toast(`Refresh failed: ${e.message}`, true); }
   finally { busy = false; }
 }
 async function guard(fn, okMsg) {
   try { await fn(); if (okMsg) toast(okMsg); await refresh(); } catch (e) { toast(e.message, true); }
 }
+const agoLabel = mins => (mins < 90 ? `${mins} min ago` : `${Math.floor(mins / 60)} h ${mins % 60 ? `${mins % 60} min ` : ""}ago`);
 function setLive(v, offset = 0) {
   live = v; at = v ? null : new Date(Date.now() + offset * 6e4).toISOString();
   $("slider").value = offset;
-  $("timeLabel").textContent = v ? "Now" : `${-offset} min ago`;
+  $("timeLabel").textContent = v ? "Now" : agoLabel(-offset);
   $("mode").textContent = v ? "Live" : "History"; $("mode").className = "pill " + (v ? "live" : "warn");
   refresh();
 }
@@ -86,13 +93,18 @@ async function trace() {
   } catch (e) { st.textContent = "error"; st.className = "pill bad"; body.textContent = e.message; toast(`Trace failed: ${e.message}`, true); }
 }
 
-initGraph(d => { const i = $("inspector"); i.hidden = !d; if (d) i.innerHTML = nodeCard(d); });
+initGraph(d => { if (d) selectNode(d.node_id); });
 initPanels();
-handlers.patchRec = (id, s) => guard(() => patch(`/recommendations/${id}`, { status: s }), s === "applied" ? "Fix applied" : "Fix dismissed");
+handlers.refresh = refresh;
 $("traceBtn").onclick = trace;
 $("diagBtn").onclick = () => guard(async () => { const r = await post("/diagnose"); toast(`${r.recommendations_created} fixes generated`); });
-$("revokeBtn").onclick = () => { const n = $("revokeSel").value; if (n && confirm(`Revoke ${n}? It will be cut off from the mesh.`)) guard(() => post(`/nodes/${n}/revoke`), `${n} revoked`); };
 $("slider").oninput = e => +e.target.value === 0 ? setLive(true) : setLive(false, +e.target.value);
+$("histRange").onchange = e => {
+  const range = +e.target.value;
+  Object.assign($("slider"), { min: -range, step: Math.max(1, Math.round(range / 60)) });
+  setLive(true);
+};
+$("knownThen").onchange = () => { if (!live) refresh(); };
 $("liveBtn").onclick = () => setLive(true);
 $("loginForm").onsubmit = async e => {
   e.preventDefault();

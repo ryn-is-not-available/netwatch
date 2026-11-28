@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import json
 import logging
 import os
 from pathlib import Path
@@ -235,9 +236,7 @@ def create_rest_app(db_dsn: str, elector: LeaderElector) -> FastAPI:
                 INSERT INTO audit_log (actor_id, action_type, target_entity, details, ip_address)
                 VALUES (%s, %s, %s, %s::jsonb, %s::inet);
                 """,
-                (actor_id, action_type, target_entity, jwt.utils.force_bytes(
-                    __import__("json").dumps(details)
-                ).decode("utf-8"), ip_addr),
+                (actor_id, action_type, target_entity, json.dumps(details), ip_addr),
             )
 
     @app.get("/health")
@@ -406,6 +405,62 @@ def create_rest_app(db_dsn: str, elector: LeaderElector) -> FastAPI:
                     for r in cur.fetchall()
                 ]
 
+    @app.get("/nodes/{node_id}/metrics")
+    def node_metrics(
+        node_id: str,
+        minutes: int = Query(default=15, ge=1, le=1440),
+        _user: dict[str, Any] = Depends(require_role("viewer")),
+    ) -> dict[str, Any]:
+        """CPU, memory and DATA_NET throughput for one node, bucketed to ~120 points.
+
+        Throughput is the delta of the byte counters between buckets; a gap or a counter reset
+        (agent reboot) yields null instead of a fake dip or spike.
+        """
+        bucket_s = max(5, (minutes * 60) // 120)
+        with psycopg.connect(db_dsn) as conn:
+            with conn.cursor() as cur:
+                _require_nodes(cur, [node_id])
+                cur.execute(
+                    """
+                    WITH b AS (
+                        SELECT time_bucket(make_interval(secs => %(bucket)s), time) AS t,
+                               AVG(cpu_usage_pct) AS cpu,
+                               AVG(memory_usage_pct) AS mem,
+                               MAX(rx_bytes) AS rx,
+                               MAX(tx_bytes) AS tx
+                        FROM node_metrics
+                        WHERE node_id = %(node)s AND time > NOW() - make_interval(mins => %(minutes)s)
+                        GROUP BY 1
+                    ), d AS (
+                        SELECT t, cpu, mem,
+                               rx - LAG(rx) OVER w AS drx,
+                               tx - LAG(tx) OVER w AS dtx,
+                               EXTRACT(EPOCH FROM t - LAG(t) OVER w) AS dt
+                        FROM b WINDOW w AS (ORDER BY t)
+                    )
+                    SELECT t, cpu, mem,
+                           CASE WHEN drx >= 0 AND dt > 0 AND dt <= 2 * %(bucket)s THEN drx / dt END,
+                           CASE WHEN dtx >= 0 AND dt > 0 AND dt <= 2 * %(bucket)s THEN dtx / dt END
+                    FROM d ORDER BY t;
+                    """,
+                    {"bucket": bucket_s, "node": node_id, "minutes": minutes},
+                )
+                rows = cur.fetchall()
+
+        def _num(v: Any) -> float | None:
+            return None if v is None else round(float(v), 2)
+
+        return {
+            "node_id": node_id,
+            "minutes": minutes,
+            "bucket_seconds": bucket_s,
+            "points": [
+                {"t": r[0].isoformat(), "cpu_pct": _num(r[1]), "mem_pct": _num(r[2]),
+                 "rx_bps": _num(r[3]), "tx_bps": _num(r[4])}
+                for r in rows
+            ],
+        }
+
     @app.post("/topology/desired")
     def set_desired_topology(
         body: DesiredTopologyRequest,
@@ -558,90 +613,72 @@ def create_rest_app(db_dsn: str, elector: LeaderElector) -> FastAPI:
             "drift": drift,
         }
         
+    def _queue_trace(cur: psycopg.Cursor, src: str, dst: str) -> dict[str, Any]:
+        """Creates a PENDING path trace and queues the run_trace command for the source node."""
+        if src == dst:
+            raise HTTPException(status_code=400, detail="src_node_id and dst_node_id must differ")
+        statuses = _require_nodes(cur, [src, dst])
+        if statuses[src] in ("offline", "revoked"):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Source node {src} is {statuses[src]} and cannot run a trace",
+            )
+        cur.execute("SELECT data_ip FROM nodes WHERE node_id = %s;", (dst,))
+        dst_data_ip = (cur.fetchone() or [None])[0]
+        cur.execute("SELECT src_node_id, dst_node_id, admin_cost FROM desired_topology_links;")
+        declared = [DeclaredLink(r[0], r[1], float(r[2])) for r in cur.fetchall()]
+        nominal_cost, nominal_path = graph_engine.shortest_path(declared, src, dst)
+
+        trace_id = str(uuid.uuid4())
+        initial_hops = [
+            {
+                "status": "PENDING",
+                "nominal_path": nominal_path,
+                "nominal_cost": None if nominal_cost == float("inf") else nominal_cost,
+            }
+        ]
+        cur.execute(
+            """
+            INSERT INTO path_traces (trace_id, src_node_id, dst_node_id, hops, captured_at)
+            VALUES (%s::uuid, %s, %s, %s::jsonb, NOW());
+            """,
+            (trace_id, src, dst, json.dumps(initial_hops)),
+        )
+        cur.execute(
+            """
+            INSERT INTO node_commands (target_node_id, command_type, payload, leader_epoch, status)
+            VALUES (%s, 'run_trace', %s::jsonb, %s, 'queued');
+            """,
+            (src, json.dumps({"trace_id": trace_id, "dst_node_id": dst, "dst_data_ip": dst_data_ip}), elector.epoch),
+        )
+        return {"trace_id": trace_id, "nominal_path": nominal_path}
+
     @app.post("/paths/trace", status_code=status.HTTP_202_ACCEPTED)
     def start_trace(
         body: TraceRequest,
         request: Request,
         user: dict[str, Any] = Depends(require_role("operator")),
     ) -> dict[str, Any]:
-        if body.src_node_id == body.dst_node_id:
-            raise HTTPException(status_code=400, detail="src_node_id and dst_node_id must differ")
-
         with psycopg.connect(db_dsn) as conn:
             _require_leader(conn)
             with conn.cursor() as cur:
-                statuses = _require_nodes(cur, [body.src_node_id, body.dst_node_id])
-                if statuses[body.src_node_id] in ("offline", "revoked"):
-                    raise HTTPException(
-                        status_code=409,
-                        detail=f"Source node {body.src_node_id} is {statuses[body.src_node_id]} and cannot run a trace",
-                    )
-                cur.execute("SELECT data_ip FROM nodes WHERE node_id = %s;", (body.dst_node_id,))
-                dst_data_ip = (cur.fetchone() or [None])[0]
-                cur.execute("SELECT src_node_id, dst_node_id, admin_cost FROM desired_topology_links;")
-                declared = [DeclaredLink(r[0], r[1], float(r[2])) for r in cur.fetchall()]
-                nominal_cost, nominal_path = graph_engine.shortest_path(
-                    declared, body.src_node_id, body.dst_node_id
-                )
-
-                cur.execute(
-                    """
-                    SELECT epoch FROM leader_epoch
-                    WHERE status = 'active'
-                    ORDER BY epoch DESC LIMIT 1;
-                    """
-                )
-                ep_row = cur.fetchone()
-                active_epoch = int(ep_row[0]) if ep_row else 1
-
-                trace_id = str(uuid.uuid4())
-                initial_hops = [
-                    {
-                        "status": "PENDING",
-                        "nominal_path": nominal_path,
-                        "nominal_cost": None if nominal_cost == float("inf") else nominal_cost,
-                    }
-                ]
-                cur.execute(
-                    """
-                    INSERT INTO path_traces (trace_id, src_node_id, dst_node_id, hops, captured_at)
-                    VALUES (%s::uuid, %s, %s, %s::jsonb, NOW());
-                    """,
-                    (trace_id, body.src_node_id, body.dst_node_id, __import__("json").dumps(initial_hops)),
-                )
-                cur.execute(
-                    """
-                    INSERT INTO node_commands (target_node_id, command_type, payload, leader_epoch, status)
-                    VALUES (%s, 'run_trace', %s::jsonb, %s, 'queued');
-                    """,
-                    (
-                        body.src_node_id,
-                        __import__("json").dumps(
-                            {
-                                "trace_id": trace_id,
-                                "dst_node_id": body.dst_node_id,
-                                "dst_data_ip": dst_data_ip,
-                            }
-                        ),
-                        active_epoch,
-                    ),
-                )
+                queued = _queue_trace(cur, body.src_node_id, body.dst_node_id)
             _write_audit(
                 conn,
                 actor_id=str(user.get("sub", "unknown")),
                 action_type="START_PATH_TRACE",
-                target_entity=trace_id,
+                target_entity=queued["trace_id"],
                 details={"src": body.src_node_id, "dst": body.dst_node_id},
                 ip_addr=_client_ip(request),
             )
             conn.commit()
 
         return {
-            "trace_id": trace_id,
+            "trace_id": queued["trace_id"],
             "status": "PENDING",
             "src_node_id": body.src_node_id,
             "dst_node_id": body.dst_node_id,
-            "nominal_path": nominal_path,
+            "nominal_path": queued["nominal_path"],
         }
 
     @app.get("/paths/trace/{trace_id}")
@@ -727,34 +764,61 @@ def create_rest_app(db_dsn: str, elector: LeaderElector) -> FastAPI:
         request: Request,
         user: dict[str, Any] = Depends(require_role("operator")),
     ) -> dict[str, Any]:
+        """Applying a recommendation executes its action (declare the link, or run an evidence
+        trace) in the same transaction; dismissing only records the decision."""
         recommendation_id = _parse_uuid(recommendation_id, "Recommendation")
+        result: dict[str, Any] = {}
         with psycopg.connect(db_dsn) as conn:
             _require_leader(conn)
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(
+                    "SELECT status, action FROM recommendations WHERE recommendation_id = %s::uuid FOR UPDATE;",
+                    (recommendation_id,),
+                )
+                row = cur.fetchone()
+                if row is None:
+                    raise HTTPException(status_code=404, detail="Recommendation not found")
+                if row[0] != "pending":
+                    raise HTTPException(status_code=409, detail=f"Recommendation is already {row[0]}")
+
+                action = row[1] or {}
+                if body.status == "applied" and action.get("type") == "declare_link":
+                    _require_nodes(cur, [action["src"], action["dst"]])
+                    cur.execute(
+                        """
+                        INSERT INTO desired_topology_links (src_node_id, dst_node_id, updated_at)
+                        VALUES (%s, %s, NOW())
+                        ON CONFLICT (src_node_id, dst_node_id) DO NOTHING;
+                        """,
+                        (action["src"], action["dst"]),
+                    )
+                    result = {"declared_link": f"{action['src']}->{action['dst']}"}
+                elif body.status == "applied" and action.get("type") == "run_trace":
+                    result = {"trace_id": _queue_trace(cur, action["src"], action["dst"])["trace_id"]}
+
+                cur.execute(
+                    """
                     UPDATE recommendations
-                    SET status = %s, 
-                    applied_at = CASE WHEN %s = 'applied' THEN NOW() ELSE applied_at END 
-                    WHERE recommendation_id = %s::uuid 
+                    SET status = %s,
+                        applied_at = CASE WHEN %s = 'applied' THEN NOW() ELSE applied_at END
+                    WHERE recommendation_id = %s::uuid
                     RETURNING recommendation_id::text, status;
                     """,
                     (body.status, body.status, recommendation_id),
                 )
                 row = cur.fetchone()
-                if row is None :
-                    raise HTTPException(status_code=404, detail="Recommendation not found")
 
             _write_audit(
                 conn,
-                str(user.get("sub","unknonw")),
+                str(user.get("sub", "unknown")),
                 "PATCH_RECOMMENDATION",
                 recommendation_id,
-                {"status": body.status},
+                {"status": body.status, **result},
                 _client_ip(request),
             )
             conn.commit()
 
-        return {"recommendation_id": row[0], "status": row[1]}
+        return {"recommendation_id": row[0], "status": row[1], "result": result}
 
     @app.get("/alerts")
     def list_alerts(_user: dict[str, Any] = Depends(require_role("viewer"))) -> list[dict[str, Any]]:
@@ -786,7 +850,7 @@ def create_rest_app(db_dsn: str, elector: LeaderElector) -> FastAPI:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT recommendation_id::text, alert_id::text, diagnosis, suggested_fix, status, created_at
+                    SELECT recommendation_id::text, alert_id::text, diagnosis, suggested_fix, status, created_at, action
                     FROM recommendations
                     ORDER BY created_at DESC
                     LIMIT 50;
@@ -800,6 +864,7 @@ def create_rest_app(db_dsn: str, elector: LeaderElector) -> FastAPI:
                         "suggested_fix": r[3],
                         "status": r[4],
                         "created_at": r[5].isoformat() if r[5] else None,
+                        "action": r[6],
                     }
                     for r in cur.fetchall()
                 ]
@@ -821,22 +886,29 @@ def create_rest_app(db_dsn: str, elector: LeaderElector) -> FastAPI:
             with conn.cursor() as cur:
                 for d in drifts:
                     diag = f"[{d.drift_type}] {d.src_node_id} -> {d.dst_node_id}: {d.details}"
-                    fix = (
-                        f"Verify DATA_NET interface/routing between {d.src_node_id} and {d.dst_node_id}"
-                        if d.drift_type != "extra_observed"
-                        else f"Add {d.src_node_id}->{d.dst_node_id} to desired topology or block unauthorized peer"
-                    )
+                    if d.drift_type == "extra_observed":
+                        fix = (
+                            f"Declare {d.src_node_id}->{d.dst_node_id} in the desired topology "
+                            "(or block the unauthorized peer)"
+                        )
+                        action = {"type": "declare_link", "src": d.src_node_id, "dst": d.dst_node_id}
+                    else:
+                        fix = (
+                            f"Run a path trace {d.src_node_id}->{d.dst_node_id} to locate the failing hop, "
+                            "then check DATA_NET interface/routing"
+                        )
+                        action = {"type": "run_trace", "src": d.src_node_id, "dst": d.dst_node_id}
                     # Re-running Diagnose must not stack duplicates of a still-pending fix.
                     cur.execute(
                         """
-                        INSERT INTO recommendations (diagnosis, suggested_fix, status)
-                        SELECT %s, %s, 'pending'
+                        INSERT INTO recommendations (diagnosis, suggested_fix, status, action)
+                        SELECT %s, %s, 'pending', %s::jsonb
                         WHERE NOT EXISTS (
                             SELECT 1 FROM recommendations
                             WHERE diagnosis = %s AND status = 'pending'
                         );
                         """,
-                        (diag, fix, diag),
+                        (diag, fix, json.dumps(action), diag),
                     )
                     created += cur.rowcount
             _write_audit(
