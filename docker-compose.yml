@@ -262,7 +262,7 @@ services:
       AI_DB_DSN: postgresql://netwatch_ai:${AI_DB_PASSWORD:-netwatch_ai_dev_pass}@172.28.0.30:5432/${POSTGRES_DB:-netwatch}
       AI_WORKER_TOKEN: ${AI_WORKER_TOKEN:-netwatch-dev-ai-worker-token}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      AI_MODEL: ${AI_MODEL:-gemini-3.8-flash}
+      AI_MODEL: ${AI_MODEL:-gemini-3.5-flash-lite}
     volumes:
       - ./ai_worker:/app/ai_worker:ro
     read_only: true

@@ -137,7 +137,7 @@ def test_worker_endpoint_auth_credentials_and_verified_output(monkeypatch) -> No
     ]}
     with patch.object(main, "build_evidence", return_value=_ev()), \
          patch.object(main.psycopg, "connect", return_value=FakeConnection(FakeCursor())), \
-         patch.object(main, "ask_model", return_value=(report, {"model": "gemini-3.8-flash", "input_tokens": 1, "output_tokens": 2})):
+         patch.object(main, "ask_model", return_value=(report, {"model": "gemini-3.5-flash-lite", "input_tokens": 1, "output_tokens": 2})):
         body = client.post("/diagnose", headers={"X-AI-Worker-Token": "tok"}).json()
     assert body["summary"] == "node-2 is down" and len(body["findings"]) == 1
     assert body["findings"][0]["action"] == {"type": "run_trace", "src": "node-1", "dst": "node-2"}
@@ -164,7 +164,7 @@ def test_control_plane_stores_ai_findings_and_rate_limits(monkeypatch) -> None:
         cursors.append(cur)
         return FakeConnection(cur)
 
-    worker_reply = {"summary": "s", "model": "gemini-3.8-flash", "verification_notes": ["dropped x"],
+    worker_reply = {"summary": "s", "model": "gemini-3.5-flash-lite", "verification_notes": ["dropped x"],
                     "findings": [{"title": "Lossy path", "severity": "warning", "explanation": "e", "suggested_fix": "f",
                                   "citations": ["link:node-1->node-2"], "action": {"type": "none"}}]}
     resp = MagicMock()

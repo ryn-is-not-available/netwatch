@@ -15,7 +15,7 @@ import httpx2  # google-genai's HTTP client (httpx successor)
 
 from ai_worker.evidence import ACTION_TYPES, SEVERITIES, Evidence
 
-MODEL = os.environ.get("AI_MODEL", "gemini-3.8-flash")
+MODEL = os.environ.get("AI_MODEL", "gemini-3.5-flash-lite")
 
 SYSTEM_PROMPT = """You are the diagnostic analyst for NetWatch, a network observability system. \
 You receive a snapshot of the monitored network as JSON inside <evidence> tags: nodes and their \
