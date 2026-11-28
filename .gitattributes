@@ -2,3 +2,5 @@
 *.sh text eol=lf
 snmp/*.conf text eol=lf
 prometheus/*.yml text eol=lf
+grafana/**/*.yml text eol=lf
+grafana/**/*.json text eol=lf

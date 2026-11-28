@@ -1,0 +1,10 @@
+# Loads the dashboards in grafana/dashboards/ into the "NetWatch" folder (planning S4).
+apiVersion: 1
+providers:
+  - name: netwatch
+    folder: NetWatch
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    options:
+      path: /etc/grafana/dashboards

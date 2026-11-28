@@ -2,6 +2,7 @@
 #   snmp      the classic baseline: each node's snmpd (S2), polled through snmp_exporter
 #   node      node_exporter on each node (host CPU, memory, network)
 #   netwatch  the control planes' /metrics (node health, link loss/latency, alerts, leader)
+# snmp and node targets carry a `node` label (node-1..node-5) for the Grafana dashboards.
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
@@ -13,7 +14,16 @@ scrape_configs:
       module: [if_mib, system]
       auth: [public_v2]
     static_configs:
-      - targets: [172.28.0.40, 172.28.0.41, 172.28.0.42, 172.28.0.43, 172.28.0.44]
+      - targets: [172.28.0.40]
+        labels: {node: node-1}
+      - targets: [172.28.0.41]
+        labels: {node: node-2}
+      - targets: [172.28.0.42]
+        labels: {node: node-3}
+      - targets: [172.28.0.43]
+        labels: {node: node-4}
+      - targets: [172.28.0.44]
+        labels: {node: node-5}
     relabel_configs:
       - source_labels: [__address__]
         target_label: __param_target
@@ -24,7 +34,16 @@ scrape_configs:
 
   - job_name: node
     static_configs:
-      - targets: [172.28.0.40:9100, 172.28.0.41:9100, 172.28.0.42:9100, 172.28.0.43:9100, 172.28.0.44:9100]
+      - targets: [172.28.0.40:9100]
+        labels: {node: node-1}
+      - targets: [172.28.0.41:9100]
+        labels: {node: node-2}
+      - targets: [172.28.0.42:9100]
+        labels: {node: node-3}
+      - targets: [172.28.0.43:9100]
+        labels: {node: node-4}
+      - targets: [172.28.0.44:9100]
+        labels: {node: node-5}
 
   - job_name: netwatch
     static_configs:

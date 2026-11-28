@@ -88,6 +88,7 @@ docker compose ps -a
 | **TimescaleDB (PG 16)** | `timescaledb` | `localhost:5432` | Bitemporal topology, hypertables, `leader_epoch`, `audit_log` |
 | **NATS JetStream** | `nats-server-1` | `4222` (client), `8222` (HTTP) | `TELEMETRY` stream (`telemetry.>`) |
 | **Prometheus** | `prometheus` | `http://localhost:9090` | Scrapes SNMP (via `snmp-exporter`), node_exporter and the control planes' `/metrics` every 15 s |
+| **Grafana** | `grafana` | `http://localhost:3000` | Dashboards *SNMP baseline (T0)* and *NetWatch overview (T1)* (`admin` / `GRAFANA_ADMIN_PASSWORD`, dev default `netwatch-grafana-dev`) |
 | **AI diagnostic worker** | `netwatch-ai-worker` | *None (internal, token-protected)* | Read-only Gemini diagnosis behind `POST /ai/diagnose` |
 | **Monitored Nodes (×5)** | `node-1` .. `node-5` | *None (outbound-only)* | snmpd `:161/udp` and node_exporter `:9100` answer on `MGMT_NET` only. Dual-homed on `MGMT_NET` and `DATA_NET` (Docker picks which is `eth0`/`eth1`; the agent finds the data interface by its `172.29.0.x` address) |
 
@@ -108,7 +109,7 @@ Open **http://localhost:8000** (or **:8001**, either replica works) and sign in.
 
 ### SNMP agent on every node (planning S2)
 
-Every node runs a permanent read-only `snmpd` (SNMPv2c, community `public`) next to the NetWatch agent. It is the classic monitoring baseline that the observability stack is compared with. Since it's the nodes' only listening service, it's locked down (`snmp/snmpd.conf`):
+Every node runs a permanent read-only `snmpd` (SNMPv2c, community `public`) next to the NetWatch agent. It is the classic monitoring baseline that the observability stack is compared with. Like node_exporter (S3), it is one of only two listening services on a node, so it's locked down (`snmp/snmpd.conf`):
 - it answers only requests coming from `MGMT_NET` (`172.28.0.0/24`), never from `DATA_NET`;
 - it exposes only the system, interface (IF-MIB, 64-bit counters) and UCD CPU/memory subtrees.
 
@@ -133,6 +134,19 @@ docker exec node-2 snmpwalk -v2c -c public 172.28.0.40 1.3.6.1.2.1.31.1.1.1.1
 ```powershell
 Invoke-RestMethod "http://localhost:9090/api/v1/query?query=netwatch_link_packet_loss_percent" | ConvertTo-Json -Depth 6
 ```
+
+### Grafana dashboards (planning S4)
+
+**Grafana** (`http://localhost:3000`) opens on the NetWatch overview. Sign in as `admin` with the `GRAFANA_ADMIN_PASSWORD` from `.env` (dev default `netwatch-grafana-dev`). The datasource and dashboards are provisioned from `grafana/` and read-only in the UI: edit the JSON in `grafana/dashboards/` instead. Grafana re-reads it within 10 s.
+
+| Dashboard | What it shows |
+| --- | --- |
+| **SNMP baseline (T0)** | What classic SNMP polling sees: agents answering, interface traffic (`ifHCIn/OutOctets`), errors and discards, oper status, agent uptime and poll time. |
+| **NetWatch overview (T1)** | NetWatch's own view: nodes and links up, lossy links, open alerts, the current leader, a node health timeline, per-link loss and latency, heartbeat age, plus node_exporter network, CPU and memory. |
+
+The two dashboards side by side are the T0 → T1 comparison. Measured with `python scripts/chaos.py loss node-3 --pct 30`: on T0, the SNMP error and discard counters stayed at 0 on every node, because packets dropped on the path aren't interface errors. On T1, all 8 node-3 links showed 16–33 % loss within about 8 s, and an alert fired after about 24 s.
+- In Docker, node_exporter reports the host's CPU and memory (all nodes share one kernel), so those panels are identical across nodes. Network counters are per node.
+- Sign-up, anonymous access, usage reporting and update checks are turned off.
 
 ### AI diagnosis
 
