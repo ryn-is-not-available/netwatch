@@ -34,6 +34,7 @@ certs/nats/
 
 # Packet captures & logs
 *.pcap
+!docs/captures/*.pcap
 *.pcapng
 *.log
 

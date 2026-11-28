@@ -1,0 +1,98 @@
+{
+  "snmp": {
+    "generated_at": "2026-11-28T12:28:56.437481+00:00",
+    "snmp_poll_interval_s": 60.0,
+    "steady": {
+      "seconds": 120,
+      "netwatch_mgmt_bytes_per_node_min": 465874,
+      "netwatch_data_bytes_per_node_min": 21803,
+      "snmp_bytes_per_node_min": 323,
+      "netwatch_false_alerts": 0,
+      "snmp_polls": 10,
+      "snmp_false_failures": 0
+    },
+    "node_freeze": {
+      "node": "node-4",
+      "netwatch_offline_s": 10.9,
+      "snmp_first_failed_poll_s": 45.9
+    },
+    "data_plane_loss": {
+      "node": "node-3",
+      "netwatch_link_degraded_s": 3.8,
+      "netwatch_alert_s": 19.8,
+      "snmp_detected": false
+    }
+  },
+  "capture": {
+    "node": "node-1",
+    "seconds": 20,
+    "interfaces": {
+      "mgmt": "eth1",
+      "data": "eth0"
+    },
+    "mgmt": {
+      "file": "node-1-mgmt.pcap",
+      "packets": 354,
+      "bytes": 54326,
+      "grpc_mtls_50051": 294,
+      "grpc_enroll_tls_50052": 0,
+      "nats_tls_4222": 60,
+      "icmp": 0,
+      "traceroute_udp": 0,
+      "plaintext_markers_found": []
+    },
+    "data": {
+      "file": "node-1-data.pcap",
+      "packets": 102,
+      "bytes": 10700,
+      "grpc_mtls_50051": 0,
+      "grpc_enroll_tls_50052": 0,
+      "nats_tls_4222": 0,
+      "icmp": 80,
+      "traceroute_udp": 8,
+      "plaintext_markers_found": []
+    }
+  },
+  "chaos": {
+    "generated_at": "2026-11-28T12:24:24.735215+00:00",
+    "results": [
+      {
+        "scenario": "loss",
+        "loss_pct": 30,
+        "node": "node-3",
+        "started_at": "2026-11-28T12:21:54.289182+00:00",
+        "link_degraded_s": 5.8,
+        "alert_firing_s": 24.9,
+        "alerts_raised": 1,
+        "recovered_links_s": 36.5,
+        "alerts_resolved_s": 36.6,
+        "passed": true
+      },
+      {
+        "scenario": "delay",
+        "delay_ms": 80,
+        "jitter_ms": 0,
+        "node": "node-2",
+        "started_at": "2026-11-28T12:23:01.165831+00:00",
+        "alert_firing_s": 18.5,
+        "alerts_raised": 2,
+        "recovered_links_s": 0.1,
+        "alerts_resolved_s": 31.0,
+        "passed": true
+      },
+      {
+        "scenario": "burst",
+        "src": "node-1",
+        "dst": "node-4",
+        "seconds": 15,
+        "bandwidth": "500M",
+        "started_at": "2026-11-28T12:23:56.232551+00:00",
+        "iperf_sent_mbps": 500.0,
+        "iperf_received_mbps": 500.0,
+        "netwatch_peak_rx_mbps": 503.2,
+        "netwatch_baseline_rx_kbps": 16552.1,
+        "passed": true
+      }
+    ]
+  }
+}

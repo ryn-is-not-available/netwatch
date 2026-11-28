@@ -203,6 +203,22 @@ python scripts/chaos.py suite --out chaos-report.json
 
 Alerts fire only after the 15 s pending window, by design, so a brief blip doesn't page anyone. `python scripts/chaos.py clear` removes any leftover qdisc.
 
+### Benchmarks, Captures and Cold Start
+
+`scripts/benchmark.py` produces `docs/BENCHMARK.md` from measured results:
+
+```powershell
+python scripts/benchmark.py snmp --interval 60 --steady 120
+```
+```powershell
+python scripts/benchmark.py capture
+```
+```powershell
+python scripts/benchmark.py report
+```
+
+`snmp` compares a classic SNMP poller with NetWatch on detection time (frozen node, data-plane loss), overhead and false positives. `capture` writes annotated Wireshark captures to `docs/captures/`. `cold-start --wipe-volumes` times a boot from empty volumes; it **deletes the database and JetStream volumes**, which is why CI runs it on every push on a fresh runner.
+
 ### Unit Tests
 
 Runtime dependencies are pinned per service in `requirements/` (the Dockerfiles install these); `requirements.txt` pulls in all of them plus the test tools:
@@ -261,10 +277,10 @@ pytest -v
 - [x] **4.2** Agent `ActiveProber` (ICMP/peer RTT & packet loss probes reported via `SubmitProbeResult` with `TIMEOUT` handling)
 - [x] **4.3** Cytoscape.js Web UI (`control_plane/ui/`) with declared/observed/drift styling, time-travel slider, live polling, and action controls
 
-### Phase 5 · AI & Benchmarks — Next
+### Phase 5 · AI & Benchmarks — Complete
 
 - [x] **5.1** Sandboxed read-only AI diagnostic worker (`/ai/diagnose`, strict JSON schema, citation verification, prompt-injection hardening)
 - [x] **5.2** Chaos injection (`tc netem` loss/delay) and `iperf3` congestion burst scripts
-- [ ] **5.3** SNMP (`T0`) vs. NetWatch (`T1`) detection latency, overhead, and false-positive benchmarks
-- [ ] **5.4** Wireshark `.pcap` captures and protocol annotations on `MGMT_NET` and `DATA_NET`
-- [ ] **5.5** Final benchmark report & cold-start timing verification (`< 5 min`)
+- [x] **5.3** SNMP (`T0`) vs. NetWatch (`T1`) detection latency, overhead, and false-positive benchmarks
+- [x] **5.4** Wireshark `.pcap` captures and protocol annotations on `MGMT_NET` and `DATA_NET`
+- [x] **5.5** Final benchmark report & cold-start timing verification (`< 5 min`)

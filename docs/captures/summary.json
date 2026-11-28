@@ -1,0 +1,30 @@
+{
+  "node": "node-1",
+  "seconds": 20,
+  "interfaces": {
+    "mgmt": "eth1",
+    "data": "eth0"
+  },
+  "mgmt": {
+    "file": "node-1-mgmt.pcap",
+    "packets": 354,
+    "bytes": 54326,
+    "grpc_mtls_50051": 294,
+    "grpc_enroll_tls_50052": 0,
+    "nats_tls_4222": 60,
+    "icmp": 0,
+    "traceroute_udp": 0,
+    "plaintext_markers_found": []
+  },
+  "data": {
+    "file": "node-1-data.pcap",
+    "packets": 102,
+    "bytes": 10700,
+    "grpc_mtls_50051": 0,
+    "grpc_enroll_tls_50052": 0,
+    "nats_tls_4222": 0,
+    "icmp": 80,
+    "traceroute_udp": 8,
+    "plaintext_markers_found": []
+  }
+}
