@@ -1,0 +1,31 @@
+# Prometheus for NetWatch (planning S3). Three sources, scraped every 15 s:
+#   snmp      the classic baseline: each node's snmpd (S2), polled through snmp_exporter
+#   node      node_exporter on each node (host CPU, memory, network)
+#   netwatch  the control planes' /metrics (node health, link loss/latency, alerts, leader)
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: snmp
+    metrics_path: /snmp
+    params:
+      module: [if_mib, system]
+      auth: [public_v2]
+    static_configs:
+      - targets: [172.28.0.40, 172.28.0.41, 172.28.0.42, 172.28.0.43, 172.28.0.44]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: 172.28.0.50:9116
+
+  - job_name: node
+    static_configs:
+      - targets: [172.28.0.40:9100, 172.28.0.41:9100, 172.28.0.42:9100, 172.28.0.43:9100, 172.28.0.44:9100]
+
+  - job_name: netwatch
+    static_configs:
+      - targets: [172.28.0.32:8000, 172.28.0.33:8000]

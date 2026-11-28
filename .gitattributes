@@ -1,2 +1,4 @@
 # Shell scripts run inside Linux containers: never check them out with CRLF.
 *.sh text eol=lf
+snmp/*.conf text eol=lf
+prometheus/*.yml text eol=lf

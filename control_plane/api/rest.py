@@ -23,6 +23,7 @@ from starlette.concurrency import run_in_threadpool
 
 from control_plane.adapters.elector import LeaderElector
 from control_plane.domain.auth import check_credentials, hash_password, load_user
+from control_plane.domain import prom_metrics
 from control_plane.domain.link_history import CLOSE_FOR_NODE_SQL
 from control_plane.domain.graph_engine import (
     DeclaredLink,
@@ -263,6 +264,48 @@ def create_rest_app(db_dsn: str, elector: LeaderElector) -> FastAPI:
             "is_leader": is_ldr,
             "leader_epoch": epoch,
         }
+
+    # Prometheus scrape target (planning S3). Unauthenticated like /health: it carries only
+    # operational numbers, and the REST port is reachable from MGMT_NET and the host only.
+    # Network state comes from the shared database, so only the leader exposes it (one series
+    # per node/link across both replicas); the standby reports its own leadership gauges only.
+    @app.get("/metrics", include_in_schema=False)
+    def metrics() -> Response:
+        is_ldr, epoch = elector.current_term()
+        rows: dict[str, Any] = {}
+        if not is_ldr:
+            body = prom_metrics.render(instance_id=elector.instance_id, is_leader=False, epoch=epoch, db_up=None)
+            return Response(body, media_type="text/plain; version=0.0.4; charset=utf-8")
+        try:
+            with psycopg.connect(db_dsn, connect_timeout=3) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT node_id, health_status, EXTRACT(EPOCH FROM now() - last_heartbeat) FROM nodes;"
+                    )
+                    rows["nodes"] = [(r[0], r[1], float(r[2]) if r[2] is not None else None) for r in cur.fetchall()]
+                    cur.execute(
+                        """
+                        SELECT tl.src_node_id, tl.dst_node_id, tl.status,
+                               COALESCE(AVG(pr.latency_ms) FILTER (WHERE pr.success), tl.latency_ms, 0.0),
+                               COALESCE(AVG(pr.packet_loss_pct), tl.packet_loss_pct, 0.0)
+                        FROM topology_links tl
+                        LEFT JOIN probe_results pr
+                          ON pr.src_node_id = tl.src_node_id AND pr.dst_node_id = tl.dst_node_id
+                         AND pr.time > now() - interval '30 seconds'
+                        WHERE tl.valid_during @> now() AND tl.recorded_during @> now()
+                        GROUP BY tl.link_id, tl.src_node_id, tl.dst_node_id, tl.status,
+                                 tl.latency_ms, tl.packet_loss_pct;
+                        """
+                    )
+                    rows["links"] = [(r[0], r[1], r[2], float(r[3]), float(r[4])) for r in cur.fetchall()]
+                    cur.execute("SELECT severity, count(*) FROM alerts WHERE status <> 'resolved' GROUP BY severity;")
+                    rows["open_alerts"] = [(r[0], int(r[1])) for r in cur.fetchall()]
+            db_up = True
+        except psycopg.Error as exc:
+            logger.warning("metrics scrape could not read the database: %s", exc)
+            db_up, rows = False, {}
+        body = prom_metrics.render(instance_id=elector.instance_id, is_leader=is_ldr, epoch=epoch, db_up=db_up, **rows)
+        return Response(body, media_type="text/plain; version=0.0.4; charset=utf-8")
 
     @app.post("/auth/token")
     def issue_token(body: LoginRequest) -> dict[str, str]:

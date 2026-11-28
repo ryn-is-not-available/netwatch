@@ -87,8 +87,9 @@ docker compose ps -a
 | **Control Plane 2 (Standby)** | `control-plane-2` | `http://localhost:8001` | Warm HA replica (auto-promotes in `< 5s` on leader loss) |
 | **TimescaleDB (PG 16)** | `timescaledb` | `localhost:5432` | Bitemporal topology, hypertables, `leader_epoch`, `audit_log` |
 | **NATS JetStream** | `nats-server-1` | `4222` (client), `8222` (HTTP) | `TELEMETRY` stream (`telemetry.>`) |
+| **Prometheus** | `prometheus` | `http://localhost:9090` | Scrapes SNMP (via `snmp-exporter`), node_exporter and the control planes' `/metrics` every 15 s |
 | **AI diagnostic worker** | `netwatch-ai-worker` | *None (internal, token-protected)* | Read-only Gemini diagnosis behind `POST /ai/diagnose` |
-| **Monitored Nodes (×5)** | `node-1` .. `node-5` | *None (outbound-only)* | Dual-homed on `MGMT_NET` and `DATA_NET` (Docker picks which is `eth0`/`eth1`; the agent finds the data interface by its `172.29.0.x` address) |
+| **Monitored Nodes (×5)** | `node-1` .. `node-5` | *None (outbound-only)* | snmpd `:161/udp` and node_exporter `:9100` answer on `MGMT_NET` only. Dual-homed on `MGMT_NET` and `DATA_NET` (Docker picks which is `eth0`/`eth1`; the agent finds the data interface by its `172.29.0.x` address) |
 
 ---
 
@@ -113,6 +114,24 @@ Every node runs a permanent read-only `snmpd` (SNMPv2c, community `public`) next
 
 ```powershell
 docker exec node-2 snmpwalk -v2c -c public 172.28.0.40 1.3.6.1.2.1.31.1.1.1.1
+```
+
+### Prometheus and exporters (planning S3)
+
+**Prometheus** (`http://localhost:9090`, config in `prometheus/prometheus.yml`) scrapes three sources every 15 s:
+
+| Job | Source | Example series |
+| --- | --- | --- |
+| `snmp` | each node's `snmpd`, polled through `snmp-exporter` (modules `if_mib` + `system`) | `ifHCInOctets`, `ifOperStatus`, `sysUpTime` |
+| `node` | `node_exporter` on each node (`<mgmt-ip>:9100`) | `node_cpu_seconds_total`, `node_memory_MemAvailable_bytes` |
+| `netwatch` | the control planes' `GET /metrics` | `netwatch_node_up`, `netwatch_link_latency_ms`, `netwatch_link_packet_loss_percent`, `netwatch_alerts_open` |
+
+- `/metrics` is unauthenticated like `/health` and carries only operational numbers: no users, tokens or addresses. Label values are escaped.
+- Network state is read from the shared database, so only the leader exposes it. That gives one series per node and link, not one per replica. The standby only reports `netwatch_control_plane_leader 0` and its epoch, so `sum(netwatch_control_plane_leader)` should always be 1.
+- node_exporter binds to the node's MGMT_NET address only, so it is closed from DATA_NET (like snmpd).
+
+```powershell
+Invoke-RestMethod "http://localhost:9090/api/v1/query?query=netwatch_link_packet_loss_percent" | ConvertTo-Json -Depth 6
 ```
 
 ### AI diagnosis

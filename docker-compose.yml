@@ -68,8 +68,8 @@ x-node-base: &node-base
     - ./agent:/app/agent:ro
     - ./shared:/app/shared:ro
     - ./snmp/snmpd.conf:/etc/netwatch/snmpd.conf:ro
-  # snmpd (read-only, MGMT_NET only: see snmp/snmpd.conf) daemonizes, then the agent runs as PID 1's child.
-  command: ["sh", "-c", "snmpd -C -c /etc/netwatch/snmpd.conf -p /tmp/snmpd.pid -Lf /dev/null && exec python -m agent.main"]
+  # Starts snmpd (S2) and node_exporter (S3), both bound to MGMT_NET only, then execs the agent.
+  command: ["sh", "/app/agent/node-entrypoint.sh"]
   healthcheck:
     # Healthy while the control plane keeps accepting heartbeats (file touched on each Ack).
     # A revoked or partitioned node turns unhealthy.
@@ -287,6 +287,30 @@ services:
       MGMT_NET:
         ipv4_address: 172.28.0.35
 
+  # --- Monitoring stack (planning S3/S4): Prometheus scrapes SNMP, node_exporter and NetWatch ---
+  snmp-exporter:
+    image: prom/snmp-exporter:v0.31.0
+    container_name: snmp-exporter
+    restart: unless-stopped
+    networks:
+      MGMT_NET:
+        ipv4_address: 172.28.0.50
+
+  prometheus:
+    image: prom/prometheus:v3.16.0
+    container_name: prometheus
+    restart: unless-stopped
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=7d"]
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on: [snmp-exporter]
+    networks:
+      MGMT_NET:
+        ipv4_address: 172.28.0.51
+
   node-1:
     <<: *node-base
     build:
@@ -362,6 +386,7 @@ services:
 
 volumes:
   tsdb_data:
+  prometheus_data:
   jetstream_data:
 
 networks:
