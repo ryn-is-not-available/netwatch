@@ -94,5 +94,16 @@
         "passed": true
       }
     ]
+  },
+  "cold_start": {
+    "compose_up_returned_s": 29.5,
+    "api_login_s": 29.7,
+    "five_nodes_healthy_s": 30.8,
+    "telemetry_flowing_s": 31.8,
+    "links_observed_s": 46.2,
+    "total_s": 46.2,
+    "limit_s": 300,
+    "passed": true,
+    "source": "GitHub Actions run 46145333325 (ubuntu-latest, fresh runner, images built in a prior step)"
   }
 }

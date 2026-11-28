@@ -39,9 +39,11 @@ From empty volumes (`docker compose down -v`, images cached) to a working mesh; 
 
 | Milestone | Seconds |
 |---|---|
-| compose up returned | n/a |
-| api login | n/a |
-| five nodes healthy | n/a |
-| telemetry flowing | n/a |
-| links observed | n/a |
-| total | n/a |
+| compose up returned | 29.5 |
+| api login | 29.7 |
+| five nodes healthy | 30.8 |
+| telemetry flowing | 31.8 |
+| links observed | 46.2 |
+| total | 46.2 |
+
+Source: GitHub Actions run 46145333325 (ubuntu-latest, fresh runner, images built in a prior step).
