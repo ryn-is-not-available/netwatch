@@ -16,6 +16,8 @@ x-control-plane-base: &control-plane-base
     NATS_CA_PATH: /app/certs/ca.crt
     ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
     ADMIN_PASSWORD: ${ADMIN_PASSWORD:-netwatch-admin-dev}
+    AI_WORKER_URL: http://172.28.0.35:8100
+    AI_WORKER_TOKEN: ${AI_WORKER_TOKEN:-netwatch-dev-ai-worker-token}
   volumes:
     - ./certs:/app/certs:ro
     - ./agent:/app/agent:ro
@@ -99,6 +101,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-netwatch_dev_pass}
       POSTGRES_DB: ${POSTGRES_DB:-netwatch}
+      AI_DB_PASSWORD: ${AI_DB_PASSWORD:-netwatch_ai_dev_pass}
     command:
       - postgres
       - -c
@@ -109,7 +112,8 @@ services:
       - tcp_keepalives_count=3
     volumes:
       - tsdb_data:/var/lib/postgresql/data
-      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./db/init-ai-role.sh:/docker-entrypoint-initdb.d/02-ai-role.sh:ro
     ports:
       - "5432:5432"
     networks:
@@ -172,6 +176,8 @@ services:
       JWT_SECRET: ${JWT_SECRET:-netwatch-dev-jwt-secret-2026-change-me-32b}
       NATS_CA_PATH: /app/certs/ca.crt
       INSTANCE_ID: control-plane-1
+      AI_WORKER_URL: http://172.28.0.35:8100
+      AI_WORKER_TOKEN: ${AI_WORKER_TOKEN:-netwatch-dev-ai-worker-token}
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-netwatch-admin-dev}
       # The standby forwards REST writes here (the other replica's API on MGMT_NET).
@@ -198,6 +204,8 @@ services:
       JWT_SECRET: ${JWT_SECRET:-netwatch-dev-jwt-secret-2026-change-me-32b}
       NATS_CA_PATH: /app/certs/ca.crt
       INSTANCE_ID: control-plane-2
+      AI_WORKER_URL: http://172.28.0.35:8100
+      AI_WORKER_TOKEN: ${AI_WORKER_TOKEN:-netwatch-dev-ai-worker-token}
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-netwatch-admin-dev}
       # The standby forwards REST writes here (the other replica's API on MGMT_NET).
@@ -240,6 +248,41 @@ services:
       MGMT_NET:
         ipv4_address: 172.28.0.34
 
+
+  # Read-only AI diagnosis (Claude). Internal only: no published port, token-protected,
+  # read-only DB role, read-only filesystem, no Linux capabilities.
+  ai-worker:
+    build:
+      context: .
+      dockerfile: ai_worker/Dockerfile
+    image: netwatch-ai-worker:latest
+    container_name: netwatch-ai-worker
+    restart: unless-stopped
+    environment:
+      AI_DB_DSN: postgresql://netwatch_ai:${AI_DB_PASSWORD:-netwatch_ai_dev_pass}@172.28.0.30:5432/${POSTGRES_DB:-netwatch}
+      AI_WORKER_TOKEN: ${AI_WORKER_TOKEN:-netwatch-dev-ai-worker-token}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-claude-opus-5-5}
+    volumes:
+      - ./ai_worker:/app/ai_worker:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8100/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    networks:
+      MGMT_NET:
+        ipv4_address: 172.28.0.35
 
   node-1:
     <<: *node-base

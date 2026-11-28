@@ -1,6 +1,8 @@
 from datetime import datetime, timedelta, timezone
 import json
 import logging
+import threading
+import time
 import os
 from pathlib import Path
 from typing import Any
@@ -850,7 +852,8 @@ def create_rest_app(db_dsn: str, elector: LeaderElector) -> FastAPI:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT recommendation_id::text, alert_id::text, diagnosis, suggested_fix, status, created_at, action
+                    SELECT recommendation_id::text, alert_id::text, diagnosis, suggested_fix, status, created_at, action,
+                           source, citations
                     FROM recommendations
                     ORDER BY created_at DESC
                     LIMIT 50;
@@ -865,6 +868,8 @@ def create_rest_app(db_dsn: str, elector: LeaderElector) -> FastAPI:
                         "status": r[4],
                         "created_at": r[5].isoformat() if r[5] else None,
                         "action": r[6],
+                        "source": r[7],
+                        "citations": r[8] or [],
                     }
                     for r in cur.fetchall()
                 ]
@@ -921,6 +926,74 @@ def create_rest_app(db_dsn: str, elector: LeaderElector) -> FastAPI:
             )
             conn.commit()
         return {"recommendations_created": created, "drift_count": len(drifts)}
+
+    ai_worker_url = (os.environ.get("AI_WORKER_URL") or "").rstrip("/")
+    ai_worker_token = os.environ.get("AI_WORKER_TOKEN", "")
+    ai_state = {"last": 0.0}
+    ai_lock = threading.Lock()
+    AI_COOLDOWN_S = 30.0
+
+    @app.post("/ai/diagnose")
+    def ai_diagnose(request: Request, user: dict[str, Any] = Depends(require_role("operator"))) -> dict[str, Any]:
+        """Asks the read-only AI worker for a diagnosis and stores its verified findings as
+        pending recommendations (source 'ai', with the evidence ids each finding cites)."""
+        if not ai_worker_url:
+            raise HTTPException(status_code=503, detail="AI diagnosis is not configured (AI_WORKER_URL)")
+        with ai_lock:
+            wait = AI_COOLDOWN_S - (time.monotonic() - ai_state["last"])
+            if wait > 0:
+                raise HTTPException(status_code=429, detail=f"AI diagnosis was run recently; try again in {int(wait) + 1}s")
+            ai_state["last"] = time.monotonic()
+
+        req = urllib.request.Request(
+            ai_worker_url + "/diagnose", method="POST", data=b"{}",
+            headers={"Content-Type": "application/json", "X-AI-Worker-Token": ai_worker_token},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=300) as resp:
+                result = json.loads(resp.read())
+        except urllib.error.HTTPError as err:
+            try:
+                detail = json.loads(err.read()).get("detail", f"AI worker error {err.code}")
+            except ValueError:
+                detail = f"AI worker error {err.code}"
+            raise HTTPException(status_code=err.code if err.code in (429, 502, 503) else 502, detail=detail) from None
+        except (urllib.error.URLError, OSError) as exc:
+            raise HTTPException(status_code=503, detail=f"AI worker unreachable: {exc}") from None
+
+        created = 0
+        with psycopg.connect(db_dsn) as conn:
+            _require_leader(conn)
+            with conn.cursor() as cur:
+                for f in result.get("findings", []):
+                    diagnosis = f"[ai · {f['severity']}] {f['title']}: {f['explanation']}"
+                    cur.execute(
+                        """
+                        INSERT INTO recommendations (diagnosis, suggested_fix, status, action, source, citations)
+                        SELECT %s, %s, 'pending', %s::jsonb, 'ai', %s::jsonb
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM recommendations WHERE diagnosis = %s AND status = 'pending'
+                        );
+                        """,
+                        (diagnosis, f["suggested_fix"] or "No action suggested.", json.dumps(f["action"]),
+                         json.dumps(f["citations"]), diagnosis),
+                    )
+                    created += cur.rowcount
+            _write_audit(
+                conn, str(user.get("sub", "unknown")), "AI_DIAGNOSIS", "topology",
+                {"model": result.get("model"), "findings": len(result.get("findings", [])),
+                 "recommendations_created": created, "dropped_or_adjusted": len(result.get("verification_notes", [])),
+                 "input_tokens": result.get("input_tokens"), "output_tokens": result.get("output_tokens")},
+                _client_ip(request),
+            )
+            conn.commit()
+        return {
+            "summary": result.get("summary", ""),
+            "recommendations_created": created,
+            "findings": len(result.get("findings", [])),
+            "verification_notes": result.get("verification_notes", []),
+            "model": result.get("model"),
+        }
 
     @app.get("/audit")
     def list_audit(_user: dict[str, Any] = Depends(require_role("viewer"))) -> list[dict[str, Any]]:

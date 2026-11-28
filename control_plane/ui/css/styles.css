@@ -100,3 +100,5 @@ table.topo input{width:64px;font:inherit;color:var(--ink);background:var(--panel
 .new-user{display:grid;gap:6px;margin-top:14px}.new-user h4{font-size:13px}
 .new-user input{font:inherit;color:var(--ink);background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:6px 8px}
 .known{display:flex;gap:6px;align-items:center;color:var(--mute);font-size:13px;white-space:nowrap}
+.pill.ai{color:var(--accent);border-color:var(--accent)}
+.cites{font-size:11px}

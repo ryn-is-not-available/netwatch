@@ -16,7 +16,7 @@ function fillSelects(nodes) {
 }
 function gate() {
   const r = me?.role ?? "viewer";
-  $("diagBtn").disabled = $("traceBtn").disabled = r === "viewer";
+  $("diagBtn").disabled = $("traceBtn").disabled = $("aiBtn").disabled = r === "viewer";
 }
 function showUser() {
   $("who").textContent = `${me.username} · ${me.role}`;
@@ -97,6 +97,18 @@ initGraph(d => { if (d) selectNode(d.node_id); });
 initPanels();
 handlers.refresh = refresh;
 $("traceBtn").onclick = trace;
+$("aiBtn").onclick = async () => {
+  const b = $("aiBtn");
+  b.disabled = true; b.textContent = "Diagnosing…";
+  try {
+    const r = await post("/ai/diagnose");
+    const dropped = r.verification_notes.length ? ` · ${r.verification_notes.length} dropped or adjusted by verification` : "";
+    toast(`${r.summary} (${r.recommendations_created} new fix${r.recommendations_created === 1 ? "" : "es"}${dropped})`);
+    document.querySelector('[data-tab="recs"]').click();
+    await refresh();
+  } catch (e) { toast(`AI diagnosis: ${e.message}`, true); }
+  finally { b.textContent = "AI diagnose"; gate(); }
+};
 $("diagBtn").onclick = () => guard(async () => { const r = await post("/diagnose"); toast(`${r.recommendations_created} fixes generated`); });
 $("slider").oninput = e => +e.target.value === 0 ? setLive(true) : setLive(false, +e.target.value);
 $("histRange").onchange = e => {

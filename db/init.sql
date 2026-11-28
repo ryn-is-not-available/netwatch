@@ -124,6 +124,9 @@ CREATE TABLE recommendations (
 
     -- What "Apply" does, e.g. {"type":"declare_link","src":..,"dst":..} or {"type":"run_trace",..}.
     action JSONB,
+    -- 'rules' (drift diagnosis) or 'ai' (AI worker); AI findings keep the evidence ids they cite.
+    source VARCHAR(16) NOT NULL DEFAULT 'rules',
+    citations JSONB,
 
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     applied_at TIMESTAMPTZ
