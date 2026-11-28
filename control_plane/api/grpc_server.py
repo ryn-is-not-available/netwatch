@@ -42,6 +42,16 @@ def _extract_peer_ip(context: grpc.ServicerContext) -> str:
     return "0.0.0.0"
 
 
+# Nodes in these states must not have links opened or refreshed by probe results.
+INACTIVE_NODE_STATES = ("offline", "revoked")
+
+
+def _node_status(cur: psycopg.Cursor, node_id: str) -> str | None:
+    cur.execute("SELECT health_status FROM nodes WHERE node_id = %s;", (node_id,))
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
 class ControlServiceServicer(netwatch_pb2_grpc.ControlServiceServicer):
     def __init__(
         self,
@@ -81,6 +91,12 @@ class ControlServiceServicer(netwatch_pb2_grpc.ControlServiceServicer):
         if not hmac.compare_digest(request.enrollment_token, self.join_token):
             logger.warning("Rejected enrollment for node_id=%s: invalid token", node_id)
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid enrollment token")
+
+        with psycopg.connect(self.db_dsn) as conn:
+            with conn.cursor() as cur:
+                if _node_status(cur, node_id) == "revoked":
+                    logger.warning("Rejected enrollment for node_id=%s: node is revoked", node_id)
+                    context.abort(grpc.StatusCode.PERMISSION_DENIED, "Node is revoked")
 
         try:
             cert_pem = sign_client_csr(
@@ -135,6 +151,8 @@ class ControlServiceServicer(netwatch_pb2_grpc.ControlServiceServicer):
 
         with psycopg.connect(self.db_dsn) as conn:
             with conn.cursor() as cur:
+                if _node_status(cur, node_id) == "revoked":
+                    context.abort(grpc.StatusCode.PERMISSION_DENIED, "Node is revoked")
                 cur.execute(
                     """
                     INSERT INTO nodes (node_id, ip_address, health_status, last_heartbeat)
@@ -226,6 +244,15 @@ class ControlServiceServicer(netwatch_pb2_grpc.ControlServiceServicer):
 
         with psycopg.connect(self.db_dsn) as conn:
             with conn.cursor() as cur:
+                src_status = _node_status(cur, src_node_id)
+                if src_status is None:
+                    context.abort(grpc.StatusCode.FAILED_PRECONDITION, "Node is not enrolled")
+                if src_status == "revoked":
+                    context.abort(grpc.StatusCode.PERMISSION_DENIED, "Node is revoked")
+                dst_status = _node_status(cur, dst_node_id)
+                if dst_status is None:
+                    context.abort(grpc.StatusCode.INVALID_ARGUMENT, f"Unknown probe_target {dst_node_id!r}")
+
                 cur.execute(
                     """
                     INSERT INTO probe_results (
@@ -276,7 +303,7 @@ class ControlServiceServicer(netwatch_pb2_grpc.ControlServiceServicer):
                             packet_loss_pct = %s,
                             avg_latency_ms = %s,
                             captured_at = %s
-                        WHERE trace_id = %s::uuid;
+                        WHERE trace_id = %s::uuid AND src_node_id = %s;
                         """,
                         (
                             json.dumps(measured_hops),
@@ -284,10 +311,32 @@ class ControlServiceServicer(netwatch_pb2_grpc.ControlServiceServicer):
                             request.latency_ms,
                             ts,
                             trace_uuid,
+                            src_node_id,
+                        ),
+                    )
+                    cur.execute(
+                        """
+                        UPDATE node_commands
+                        SET status = %s, executed_at = NOW(), result_output = %s
+                        WHERE command_type = 'run_trace'
+                          AND target_node_id = %s
+                          AND payload->>'trace_id' = %s
+                          AND status IN ('queued', 'delivered');
+                        """,
+                        (
+                            "executed" if request.success else "failed",
+                            json.dumps(measured_hops),
+                            src_node_id,
+                            trace_uuid,
                         ),
                     )
 
-            if self.elector.is_leader:
+            # Never resurrect links touching an offline/revoked node: peers keep probing a dead
+            # node, and re-opening its links would undo the LeaseManager's eviction every sweep.
+            link_mutable = (
+                src_status not in INACTIVE_NODE_STATES and dst_status not in INACTIVE_NODE_STATES
+            )
+            if link_mutable and self.elector.is_leader:
                 epoch = self.elector.epoch
                 updated = self.elector.fenced_execute(
                     conn,
@@ -303,7 +352,8 @@ class ControlServiceServicer(netwatch_pb2_grpc.ControlServiceServicer):
                     (link_status, request.latency_ms, request.packet_loss_pct, src_node_id, dst_node_id),
                     expected_epoch=None,
                 )
-                if updated == 0:
+                # A failed probe can degrade an existing link but never opens a new one.
+                if updated == 0 and request.success:
                     self.elector.fenced_execute(
                         conn,
                         """

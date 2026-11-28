@@ -75,11 +75,11 @@ def test_lease_manager_skips_when_standby() -> None:
 
 def test_lease_manager_transitions_and_closes_links() -> None:
     elector = _make_leader_elector(is_leader=True, epoch=4)
-    # 4 fenced calls: degraded, offline, close_links, insert_alert -> 4 FOR SHARE checks
-    cur = FakeCursor(fetchone_queue=[(1,), (1,), (1,), (1,)], rowcount=2)
+    # 5 fenced calls: degraded, offline, close_links, raise_alerts, resolve_alerts -> 5 FOR SHARE checks
+    cur = FakeCursor(fetchone_queue=[(1,), (1,), (1,), (1,), (1,)], rowcount=2)
     conn = FakeConnection(cur)
 
-    lm = LeaseManager(db_dsn="postgresql://unused", elector=elector)
+    lm = LeaseManager(db_dsn="postgresql://unused", elector=elector, takeover_grace_s=0)
     with patch("control_plane.domain.lease_manager.psycopg.connect", return_value=conn):
         degraded, offline, closed = lm.evaluate_once()
 
@@ -88,6 +88,40 @@ def test_lease_manager_transitions_and_closes_links() -> None:
     assert any("health_status = 'degraded'" in sql for sql, _ in cur.executed)
     assert any("health_status = 'offline'" in sql for sql, _ in cur.executed)
     assert any("UPDATE topology_links" in sql for sql, _ in cur.executed)
+    # Alerts are per node and deduplicated, and recovered nodes get their alert resolved.
+    raise_sql = next(sql for sql, _ in cur.executed if "INSERT INTO alerts" in sql)
+    assert "affected_node_id" in raise_sql and "NOT EXISTS" in raise_sql
+    assert any("SET status = 'resolved'" in sql for sql, _ in cur.executed)
+
+
+def test_lease_manager_aborts_when_fenced_out() -> None:
+    elector = _make_leader_elector(is_leader=True, epoch=4)
+    # The epoch check returns no row: this instance lost leadership mid-sweep.
+    cur = FakeCursor(fetchone_queue=[], rowcount=2)
+    conn = FakeConnection(cur)
+
+    lm = LeaseManager(db_dsn="postgresql://unused", elector=elector, takeover_grace_s=0)
+    with patch("control_plane.domain.lease_manager.psycopg.connect", return_value=conn):
+        assert lm.evaluate_once() == (0, 0, 0)
+    assert not any("INSERT INTO alerts" in sql for sql, _ in cur.executed)
+
+
+def test_lease_manager_grace_period_after_takeover() -> None:
+    elector = _make_leader_elector(is_leader=True, epoch=7)
+    connect = MagicMock()
+    lm = LeaseManager(db_dsn="postgresql://unused", elector=elector, takeover_grace_s=12.0)
+
+    with patch("control_plane.domain.lease_manager.psycopg.connect", connect), \
+         patch("control_plane.domain.lease_manager.time.monotonic", return_value=1000.0):
+        # Freshly promoted: stale heartbeats from the election gap must not evict anyone.
+        assert lm.evaluate_once() == (0, 0, 0)
+    connect.assert_not_called()
+
+    cur = FakeCursor(fetchone_queue=[(1,)] * 5, rowcount=1)
+    with patch("control_plane.domain.lease_manager.psycopg.connect", return_value=FakeConnection(cur)), \
+         patch("control_plane.domain.lease_manager.time.monotonic", return_value=1012.5):
+        # One full lease later, sweeps run normally.
+        assert lm.evaluate_once() == (1, 1, 1)
 
 
 # --- 3.6b: TopologyGraphEngine tests ---

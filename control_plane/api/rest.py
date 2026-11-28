@@ -29,19 +29,6 @@ UI_DIR = Path(__file__).resolve().parent.parent / "ui"
 ROLE_RANK = {"viewer": 1, "operator": 2, "admin": 3}
 bearer_scheme = HTTPBearer(auto_error=False)
 
-ENSURE_REST_TABLES_SQL = """
-CREATE TABLE IF NOT EXISTS desired_topology_links (
-    src_node_id VARCHAR(255) NOT NULL REFERENCES nodes(node_id) ON DELETE CASCADE,
-    dst_node_id VARCHAR(255) NOT NULL REFERENCES nodes(node_id) ON DELETE CASCADE,
-    admin_cost NUMERIC(10, 2) NOT NULL DEFAULT 1.0,
-    expected_latency_ms NUMERIC(10, 2) NOT NULL DEFAULT 5.0,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (src_node_id, dst_node_id),
-    CONSTRAINT no_self_desired_links CHECK (src_node_id <> dst_node_id)
-);
-"""
-
-
 class TokenRequest(BaseModel):
     subject: str = Field(default="dev-operator", min_length=1)
     role: str = Field(default="admin", pattern="^(viewer|operator|admin)$")
@@ -77,12 +64,8 @@ def _client_ip(request: Request) -> str:
 def create_rest_app(db_dsn: str, elector: LeaderElector) -> FastAPI:
     jwt_secret = os.environ.get("JWT_SECRET", "netwatch-dev-jwt-secret-2026")
     graph_engine = TopologyGraphEngine()
-
-    with psycopg.connect(db_dsn) as conn:
-        with conn.cursor() as cur:
-            cur.execute(ENSURE_REST_TABLES_SQL)
-        conn.commit()
-
+    # Schema (incl. desired_topology_links) lives in db/init.sql. No DDL here: both
+    # control-plane replicas start together and concurrent CREATE ... IF NOT EXISTS races.
 
     app = FastAPI(title="NetWatch Control Plane API", version="1.0.0")
     app.add_middleware(
@@ -122,6 +105,39 @@ def create_rest_app(db_dsn: str, elector: LeaderElector) -> FastAPI:
             return payload
 
         return _dep
+
+    def _parse_uuid(value: str, what: str) -> str:
+        try:
+            return str(uuid.UUID(value))
+        except ValueError:
+            raise HTTPException(status_code=404, detail=f"{what} not found") from None
+
+    def _require_leader(conn: psycopg.Connection[Any]) -> None:
+        """Epoch-fences a REST write: only the active leader may mutate control state.
+
+        Takes a FOR SHARE lock on this instance's active epoch row, so a concurrent
+        promotion of the peer (which revokes that row) waits for this transaction.
+        """
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM leader_epoch WHERE leader_id = %s AND status = 'active' FOR SHARE;",
+                (elector.instance_id,),
+            )
+            if cur.fetchone() is None:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=f"{elector.instance_id} is a standby; send writes to the active leader",
+                )
+
+    def _require_nodes(cur: psycopg.Cursor, node_ids: list[str]) -> dict[str, str]:
+        """Returns {node_id: health_status}; 404 if any node is unknown."""
+        ids = sorted(set(node_ids))
+        cur.execute("SELECT node_id, health_status FROM nodes WHERE node_id = ANY(%s);", (ids,))
+        found = {row[0]: row[1] for row in cur.fetchall()}
+        missing = [n for n in ids if n not in found]
+        if missing:
+            raise HTTPException(status_code=404, detail=f"Unknown node(s): {', '.join(missing)}")
+        return found
 
     def _write_audit(
         conn: psycopg.Connection[Any],
@@ -194,8 +210,14 @@ def create_rest_app(db_dsn: str, elector: LeaderElector) -> FastAPI:
         request: Request,
         user: dict[str, Any] = Depends(require_role("operator")),
     ) -> dict[str, Any]:
+        self_links = [f"{l.src_node_id}->{l.dst_node_id}" for l in body.links if l.src_node_id == l.dst_node_id]
+        if self_links:
+            raise HTTPException(status_code=422, detail=f"Self-links are not allowed: {', '.join(self_links)}")
+
         with psycopg.connect(db_dsn) as conn:
+            _require_leader(conn)
             with conn.cursor() as cur:
+                _require_nodes(cur, [n for l in body.links for n in (l.src_node_id, l.dst_node_id)])
                 if body.replace:
                     cur.execute("DELETE FROM desired_topology_links;")
                 for link in body.links:
@@ -329,7 +351,14 @@ def create_rest_app(db_dsn: str, elector: LeaderElector) -> FastAPI:
             raise HTTPException(status_code=400, detail="src_node_id and dst_node_id must differ")
 
         with psycopg.connect(db_dsn) as conn:
+            _require_leader(conn)
             with conn.cursor() as cur:
+                statuses = _require_nodes(cur, [body.src_node_id, body.dst_node_id])
+                if statuses[body.src_node_id] in ("offline", "revoked"):
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Source node {body.src_node_id} is {statuses[body.src_node_id]} and cannot run a trace",
+                    )
                 cur.execute("SELECT src_node_id, dst_node_id, admin_cost FROM desired_topology_links;")
                 declared = [DeclaredLink(r[0], r[1], float(r[2])) for r in cur.fetchall()]
                 nominal_cost, nominal_path = graph_engine.shortest_path(
@@ -397,6 +426,7 @@ def create_rest_app(db_dsn: str, elector: LeaderElector) -> FastAPI:
         trace_id: str,
         _user: dict[str, Any] = Depends(require_role("viewer")),
     ) -> dict[str, Any]:
+        trace_id = _parse_uuid(trace_id, "Trace")
         with psycopg.connect(db_dsn) as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -443,6 +473,7 @@ def create_rest_app(db_dsn: str, elector: LeaderElector) -> FastAPI:
         user: dict[str, Any] = Depends(require_role("admin")),
     ) -> dict[str, Any]:
         with psycopg.connect(db_dsn) as conn:
+            _require_leader(conn)
             with conn.cursor() as cur:
                 cur.execute(
                     "UPDATE nodes SET health_status = 'revoked' WHERE node_id = %s RETURNING node_id;",
@@ -479,10 +510,12 @@ def create_rest_app(db_dsn: str, elector: LeaderElector) -> FastAPI:
         request: Request,
         user: dict[str, Any] = Depends(require_role("operator")),
     ) -> dict[str, Any]:
+        recommendation_id = _parse_uuid(recommendation_id, "Recommendation")
         with psycopg.connect(db_dsn) as conn:
+            _require_leader(conn)
             with conn.cursor() as cur:
                 cur.execute("""
-                    UPDATE recommendations 
+                    UPDATE recommendations
                     SET status = %s, 
                     applied_at = CASE WHEN %s = 'applied' THEN NOW() ELSE applied_at END 
                     WHERE recommendation_id = %s::uuid 
@@ -561,6 +594,7 @@ def create_rest_app(db_dsn: str, elector: LeaderElector) -> FastAPI:
     ) -> dict[str, Any]:
         """Generates actionable recommendations for active drift items."""
         with psycopg.connect(db_dsn) as conn:
+            _require_leader(conn)
             with conn.cursor() as cur:
                 cur.execute("SELECT src_node_id, dst_node_id, admin_cost FROM desired_topology_links;")
                 declared = [DeclaredLink(r[0], r[1], float(r[2])) for r in cur.fetchall()]
@@ -575,14 +609,19 @@ def create_rest_app(db_dsn: str, elector: LeaderElector) -> FastAPI:
                         if d.drift_type != "extra_observed"
                         else f"Add {d.src_node_id}->{d.dst_node_id} to desired topology or block unauthorized peer"
                     )
+                    # Re-running Diagnose must not stack duplicates of a still-pending fix.
                     cur.execute(
                         """
                         INSERT INTO recommendations (diagnosis, suggested_fix, status)
-                        VALUES (%s, %s, 'pending');
+                        SELECT %s, %s, 'pending'
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM recommendations
+                            WHERE diagnosis = %s AND status = 'pending'
+                        );
                         """,
-                        (diag, fix),
+                        (diag, fix, diag),
                     )
-                    created += 1
+                    created += cur.rowcount
             _write_audit(
                 conn,
                 actor_id=str(user.get("sub", "unknown")),
