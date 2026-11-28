@@ -14,6 +14,7 @@ import os
 
 
 from nats.js.api import RetentionPolicy, StorageType, StreamConfig
+from control_plane.domain.alert_evaluator import AlertEngine
 from control_plane.domain.lease_manager import LeaseManager
 from control_plane.adapters.elector import LeaderElector
 from control_plane.api.rest import create_rest_app
@@ -464,6 +465,15 @@ def serve() -> None:
     )
     lease_thread.start()
 
+    alert_engine = AlertEngine(db_dsn=db_dsn, elector=elector)
+    alert_thread = threading.Thread(
+        target=alert_engine.run_forever,
+        args=(stop_event,),
+        name="alert-engine",
+        daemon=True,
+    )
+    alert_thread.start()
+
     rest_app = create_rest_app(db_dsn=db_dsn, elector=elector)
     rest_config = uvicorn.Config(
         rest_app,
@@ -525,6 +535,7 @@ def serve() -> None:
     stop_event.set()
     elector_thread.join(timeout=3.0)
     lease_thread.join(timeout=3.0)
+    alert_thread.join(timeout=3.0)
     rest_server.should_exit = True
 
 

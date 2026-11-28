@@ -44,9 +44,14 @@ jobs:
 
       - name: Container health
         run: |
+          for i in $(seq 1 40); do
+            pending=$(docker compose ps --format '{{.Name}} {{.Health}}' | awk '$2 != "" && $2 != "healthy"')
+            [ -z "$pending" ] && { docker compose ps -a; exit 0; }
+            echo "waiting on: $pending"
+            sleep 3
+          done
           docker compose ps -a
-          unhealthy=$(docker compose ps --format '{{.Name}} {{.Health}}' | awk '$2 != "" && $2 != "healthy"')
-          [ -z "$unhealthy" ] || { echo "Unhealthy: $unhealthy"; exit 1; }
+          exit 1
 
       - name: Fault injection (stop node-1, check eviction, alerting, recovery)
         shell: pwsh

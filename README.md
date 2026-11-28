@@ -84,7 +84,7 @@ docker compose ps -a
 | **Control Plane 2 (Standby)** | `control-plane-2` | `http://localhost:8001` | Warm HA replica (auto-promotes in `< 5s` on leader loss) |
 | **TimescaleDB (PG 16)** | `timescaledb` | `localhost:5432` | Bitemporal topology, hypertables, `leader_epoch`, `audit_log` |
 | **NATS JetStream** | `nats-server-1` | `4222` (client), `8222` (HTTP) | `TELEMETRY` stream (`telemetry.>`) |
-| **Monitored Nodes (×5)** | `node-1` .. `node-5` | *None (outbound-only)* | Dual-homed on `MGMT_NET` (`eth0`) and `DATA_NET` (`eth1`) |
+| **Monitored Nodes (×5)** | `node-1` .. `node-5` | *None (outbound-only)* | Dual-homed on `MGMT_NET` and `DATA_NET` (Docker picks which is `eth0`/`eth1`; the agent finds the data interface by its `172.29.0.x` address) |
 
 ---
 
@@ -97,6 +97,7 @@ Open **http://localhost:8000** in your browser to access the NetWatch Console:
 - **Live Topology Graph:** Displays declared links (dashed grey), observed healthy links (solid), and drift/degraded links (red), polling automatically every few seconds.
 - **Time-Travel Slider:** Scrub backward in time (`?at=` and `?known_at=`) to reconstruct historical network states.
 - **Operator Actions:** Trigger A → B path traces, inspect drift alerts, apply/dismiss recommendations, or revoke compromised nodes (`admin` role; all writes are recorded in the append-only `audit_log`). A revoked node is refused on heartbeat, probe submission and re-enrollment, and its links are closed.
+- **Alerts:** the leader's `AlertEngine` checks every observed link every 5s using a 30s average. It raises a **packet loss** alert above 2% (`critical` from 20%) and a **latency** alert above the link's declared `expected_latency_ms` (20 ms for undeclared links). A rule must stay breached for 15s (`PENDING`) before it fires. It resolves only once loss is back at or below 1%, or latency at or below 80% of the SLO, so a value hovering at the threshold doesn't flap. Timers survive leader failover (`alert_timers`). Alerts for links that disappear are resolved. Separately, the `LeaseManager` raises one `Node unreachable` alert per offline node.
 - **Writes go to the leader:** only the active leader accepts writes. The standby replica serves reads but answers writes with `503` (check `GET /health` for `is_leader`), so after a failover use the other port.
 
 ### 2. REST API Quick Examples (PowerShell)
@@ -182,7 +183,7 @@ pytest -v
 ### Phase 2 · Agent & Telemetry — Complete
 
 - [x] **2.1** Circular RAM `RingBuffer` (`1,000` ticks, monotonic `seq_id`, `boot_id`, unit tests)
-- [x] **2.2** Host & interface collector (`/proc` CPU/RAM, `eth1` rx/tx/drop counters, `DATA_NET` neighbors)
+- [x] **2.2** Host & interface collector (`/proc` CPU/RAM, `DATA_NET` interface rx/tx/drop counters, `DATA_NET` neighbors)
 - [x] **2.3** Outbound-only mTLS agent (`Enroll`, 5s `Heartbeat` with zero listening ports, NATS JetStream publisher with `PubAck` draining)
 - [x] **2.4** NATS JetStream batch worker with staging table deduplication (`ON CONFLICT DO NOTHING`)
 - [x] **2.5** NATS outage resilience verified (0 lost ticks, 0 duplicate rows)
