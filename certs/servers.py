@@ -96,7 +96,8 @@ def generate_server_cert(service_name: str, dns_names: list[str], ip_addrs: list
     return cert
 
 
-if __name__ == "__main__":
+def generate_default_server_certs() -> None:
+    """Issues the control-plane and NATS server certificates used by docker-compose."""
     generate_server_cert(
         service_name="control-plane",
         dns_names=["control-plane", "control-plane-1", "control-plane-2", "localhost"],
@@ -110,3 +111,7 @@ if __name__ == "__main__":
         ip_addrs=["127.0.0.1", "172.28.0.31"],
         days=365,
     )
+
+
+if __name__ == "__main__":
+    generate_default_server_certs()

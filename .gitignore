@@ -24,6 +24,7 @@ certs/*.key
 certs/*.crt
 certs/*.pem
 certs/*.csr
+certs/public/
 *.pem
 *.key
 .env

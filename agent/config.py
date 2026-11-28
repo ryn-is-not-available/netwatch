@@ -69,7 +69,7 @@ class AgentConfig:
         if not cp_addrs:
             raise ValueError("At least one control-plane address must be set via CP_ADDRS or CP_1_ADDR/CP_2_ADDR")
 
-        ca_cert_raw = (os.environ.get("CA_CERT_PATH") or "/app/certs/ca.crt").strip()
+        ca_cert_raw = (os.environ.get("CA_CERT_PATH") or "/app/pki/ca.crt").strip()
         cert_dir_raw = (os.environ.get("CERT_DIR") or "/var/lib/netwatch/certs").strip()
 
         heartbeat_raw = os.environ.get("HEARTBEAT_INTERVAL_S")

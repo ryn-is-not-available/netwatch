@@ -18,6 +18,8 @@ x-control-plane-base: &control-plane-base
     - ./shared:/app/shared:ro
     - ./control_plane:/app/control_plane:ro
   depends_on:
+    cert-init:
+      condition: service_completed_successfully
     timescaledb:
       condition: service_healthy
     nats:
@@ -34,7 +36,7 @@ x-node-env: &node-env
   CP_1_ADDR: 172.28.0.32:50051
   CP_2_ADDR: 172.28.0.33:50051
   NATS_URL: nats://telemetry_agent:${NATS_TELEMETRY_AGENT_PASSWORD:-dev_agent_pass}@172.28.0.31:4222
-  CA_CERT_PATH: /app/certs/ca.crt
+  CA_CERT_PATH: /app/pki/ca.crt
   CERT_DIR: /var/lib/netwatch/certs
 
 x-node-base: &node-base
@@ -49,7 +51,13 @@ x-node-base: &node-base
     control-plane-2:
       condition: service_healthy
   volumes:
-    - ./certs:/app/certs:ro
+    # Nodes get only the public CA certificate plus the CSR helper modules.
+    # Never mount ./certs wholesale here: it holds ca.key, which would let any
+    # node mint a client certificate for any node_id.
+    - ./certs/public:/app/pki:ro
+    - ./certs/__init__.py:/app/certs/__init__.py:ro
+    - ./certs/utils.py:/app/certs/utils.py:ro
+    - ./certs/client.py:/app/certs/client.py:ro
     - ./agent:/app/agent:ro
     - ./shared:/app/shared:ro
   healthcheck:
@@ -60,6 +68,22 @@ x-node-base: &node-base
     start_period: 15s
 
 services:
+  # One-shot PKI bootstrap: creates the CA and server certs on first run (kept on later runs)
+  # and publishes certs/public/ca.crt for the nodes. Control planes wait for it to exit 0.
+  cert-init:
+    build:
+      context: .
+      dockerfile: control_plane/Dockerfile
+    image: netwatch-control-plane:latest
+    container_name: cert-init
+    restart: "no"
+    working_dir: /app
+    command: ["python", "scripts/gen_certs.py"]
+    volumes:
+      - ./certs:/app/certs
+      - ./scripts:/app/scripts:ro
+    network_mode: none
+
   timescaledb:
     image: timescale/timescaledb:latest-pg16
     container_name: timescaledb
