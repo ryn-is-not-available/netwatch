@@ -176,6 +176,33 @@ Stops `node-1` and checks that it is marked offline, that `LeaseManager` closes 
 powershell -ExecutionPolicy Bypass -File .\scripts\verify_fault_injection.ps1
 ```
 
+### Chaos Injection (`tc netem`, `iperf3`)
+
+`scripts/chaos.py` injects faults on a node's `DATA_NET` interface, measures how fast NetWatch detects them and how fast it recovers, and always removes the fault afterwards (even on Ctrl+C). It uses only the Python standard library, and works the same on Windows and Linux.
+
+```powershell
+python scripts/chaos.py loss node-3 --pct 30
+```
+```powershell
+python scripts/chaos.py delay node-2 --ms 80
+```
+```powershell
+python scripts/chaos.py burst node-1 node-4 --seconds 15 --bandwidth 500M
+```
+```powershell
+python scripts/chaos.py suite --out chaos-report.json
+```
+
+`suite` runs all three and exits 1 if a fault is not detected or does not recover. Measured on this stack (Docker Desktop):
+
+| Scenario | Detection | Recovery after clearing |
+|---|---|---|
+| 30% loss on node-3 | links degraded in ~6-10 s, `Packet loss` alert in ~25-30 s | ~35 s |
+| +80 ms delay on node-2 | `Latency` alert in ~19 s | ~31 s |
+| iperf3 500 Mbit/s node-1 → node-4 | NetWatch rx peak 503 Mbit/s vs iperf3 500 Mbit/s | - |
+
+Alerts fire only after the 15 s pending window, by design, so a brief blip doesn't page anyone. `python scripts/chaos.py clear` removes any leftover qdisc.
+
 ### Unit Tests
 
 Runtime dependencies are pinned per service in `requirements/` (the Dockerfiles install these); `requirements.txt` pulls in all of them plus the test tools:
@@ -237,7 +264,7 @@ pytest -v
 ### Phase 5 · AI & Benchmarks — Next
 
 - [x] **5.1** Sandboxed read-only AI diagnostic worker (`/ai/diagnose`, strict JSON schema, citation verification, prompt-injection hardening)
-- [ ] **5.2** Chaos injection (`tc netem` loss/delay) and `iperf3` congestion burst scripts
+- [x] **5.2** Chaos injection (`tc netem` loss/delay) and `iperf3` congestion burst scripts
 - [ ] **5.3** SNMP (`T0`) vs. NetWatch (`T1`) detection latency, overhead, and false-positive benchmarks
 - [ ] **5.4** Wireshark `.pcap` captures and protocol annotations on `MGMT_NET` and `DATA_NET`
 - [ ] **5.5** Final benchmark report & cold-start timing verification (`< 5 min`)
