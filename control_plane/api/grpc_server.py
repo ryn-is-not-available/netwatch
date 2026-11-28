@@ -19,6 +19,7 @@ from control_plane.domain.lease_manager import LeaseManager
 from control_plane.adapters.elector import LeaderElector
 from control_plane.api.rest import create_rest_app
 from shared import netwatch_pb2, netwatch_pb2_grpc
+from shared.telemetry_auth import tls_context
 from nats.js.errors import NotFoundError
 from certs.client import sign_client_csr
 from datetime import datetime, timezone
@@ -397,7 +398,9 @@ class ControlServiceServicer(netwatch_pb2_grpc.ControlServiceServicer):
             leader_epoch=self.elector.epoch,
         )
 
-async def _ensure_telemetry_stream(nats_url: str, retries: int = 15, delay_s: float = 1.0) -> None:
+async def _ensure_telemetry_stream(
+    nats_url: str, nats_ca: str = "", retries: int = 15, delay_s: float = 1.0
+) -> None:
     nc = None
     for attempt in range(1, retries + 1):
         try:
@@ -405,6 +408,7 @@ async def _ensure_telemetry_stream(nats_url: str, retries: int = 15, delay_s: fl
                 servers=[nats_url],
                 name="control-plane-bootstrap",
                 connect_timeout=2.0,
+                tls=tls_context(nats_ca) if nats_ca else None,
             )
             break
         except Exception as exc:
@@ -456,7 +460,7 @@ def serve() -> None:
     nats_url = (os.environ.get("NATS_URL") or "").strip()
     if not nats_url:
         raise RuntimeError("NATS_URL environment variable is required")
-    asyncio.run(_ensure_telemetry_stream(nats_url))
+    asyncio.run(_ensure_telemetry_stream(nats_url, (os.environ.get("NATS_CA_PATH") or "").strip()))
 
     instance_id = (os.environ.get("INSTANCE_ID") or "control-plane-1").strip()
     db_dsn = _build_db_dsn()

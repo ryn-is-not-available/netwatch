@@ -5,10 +5,12 @@ Writes into certs/:
   control-plane.key, control-plane.crt
   nats.key, nats.crt
   public/ca.crt                       Copy of the CA certificate, the only PKI file nodes mount
+  nats/nats.{crt,key}                 Copy of the NATS server cert, the only PKI files NATS mounts
 
 Run from anywhere:  python scripts/gen_certs.py
 docker-compose runs it automatically in the one-shot `cert-init` service.
 """
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -20,6 +22,7 @@ from certs import ca, servers  # noqa: E402
 
 CERTS_DIR = ROOT / "certs"
 PUBLIC_DIR = CERTS_DIR / "public"
+NATS_DIR = CERTS_DIR / "nats"  # mounted into the NATS container (no CA key)
 
 
 def _check_pair(name: str) -> None:
@@ -41,6 +44,10 @@ def main() -> None:
 
     PUBLIC_DIR.mkdir(exist_ok=True)
     shutil.copyfile(CERTS_DIR / "ca.crt", PUBLIC_DIR / "ca.crt")
+    NATS_DIR.mkdir(exist_ok=True)
+    for name in ("nats.crt", "nats.key"):
+        shutil.copyfile(CERTS_DIR / name, NATS_DIR / name)
+    os.chmod(NATS_DIR / "nats.key", 0o600)  # copyfile does not preserve permissions
     print(f"PKI ready in {CERTS_DIR} (public CA copy: {PUBLIC_DIR / 'ca.crt'})")
 
 

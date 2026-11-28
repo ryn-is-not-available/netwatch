@@ -12,6 +12,9 @@ from nats.errors import TimeoutError as NatsTimeoutError
 from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy
 import psycopg
 
+from shared.telemetry_auth import SIGNATURE_HEADER, tls_context
+from worker.verifier import TelemetryVerifier
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -185,12 +188,15 @@ async def run_worker(stop_event: asyncio.Event) -> None:
 
     conn = await _connect_db(db_dsn, stop_event)
 
+    nats_ca = (os.environ.get("NATS_CA_PATH") or "").strip()
     nc = await nats.connect(
         servers=[nats_url],
         name="telemetry-worker-1",
         max_reconnect_attempts=-1,
         reconnect_time_wait=1.0,
+        tls=tls_context(nats_ca) if nats_ca else None,
     )
+    verifier = TelemetryVerifier()
     js = nc.jetstream()
 
     consumer_cfg = ConsumerConfig(
@@ -216,20 +222,32 @@ async def run_worker(stop_event: asyncio.Event) -> None:
             except NatsTimeoutError:
                 continue
 
-            rows: list[Tick] = []
-            valid_msgs = []
-            for msg in msgs:
-                try:
-                    rows.append(_parse_tick(msg.data))
-                    valid_msgs.append(msg)
-                except Exception as exc:
-                    logger.error("Poison telemetry message dropped (terminating): %s", exc)
-                    await msg.term()
-
-            if not rows:
-                continue
-
             try:
+                # Authenticate first: a node must not be able to write telemetry as another node.
+                verdicts = await asyncio.to_thread(
+                    lambda: [
+                        verifier.check(conn, m.subject, m.data, (m.headers or {}).get(SIGNATURE_HEADER))
+                        for m in msgs
+                    ]
+                )
+
+                rows: list[Tick] = []
+                valid_msgs = []
+                for msg, reason in zip(msgs, verdicts):
+                    if reason is not None:
+                        logger.warning("Rejected telemetry on %s: %s", msg.subject, reason)
+                        await msg.term()
+                        continue
+                    try:
+                        rows.append(_parse_tick(msg.data))
+                        valid_msgs.append(msg)
+                    except Exception as exc:
+                        logger.error("Poison telemetry message dropped (terminating): %s", exc)
+                        await msg.term()
+
+                if not rows:
+                    continue
+
                 inserted = await asyncio.to_thread(_flush_batch_to_db, conn, rows)
                 # Ack only after the commit succeeded so JetStream advances the consumer cursor.
                 for msg in valid_msgs:
@@ -237,7 +255,7 @@ async def run_worker(stop_event: asyncio.Event) -> None:
 
                 logger.info("Flushed and acked %d telemetry ticks into TimescaleDB", inserted)
             except Exception as exc:
-                logger.error("DB batch flush failed (leaving %d msgs unacked for redelivery): %s", len(valid_msgs), exc)
+                logger.error("Telemetry batch failed (leaving msgs unacked for redelivery): %s", exc)
                 if conn.closed or conn.broken:
                     # A dead connection never recovers by itself (e.g. after a DB restart).
                     await asyncio.to_thread(conn.close)

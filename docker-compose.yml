@@ -10,9 +10,10 @@ x-control-plane-base: &control-plane-base
     NATS_HOST: ${NATS_HOST:-172.28.0.31}
     NATS_PORT: ${NATS_PORT:-4222}
     NATS_CONTROL_PLANE_PASSWORD: ${NATS_CONTROL_PLANE_PASSWORD:-dev_cp_pass}
-    NATS_URL: nats://control_plane:${NATS_CONTROL_PLANE_PASSWORD:-dev_cp_pass}@${NATS_HOST:-172.28.0.31}:${NATS_PORT:-4222}
+    NATS_URL: tls://control_plane:${NATS_CONTROL_PLANE_PASSWORD:-dev_cp_pass}@${NATS_HOST:-172.28.0.31}:${NATS_PORT:-4222}
     JOIN_TOKEN: ${JOIN_TOKEN:-netwatch-dev-join-token-2026}
     JWT_SECRET: ${JWT_SECRET:-netwatch-dev-jwt-secret-2026}
+    NATS_CA_PATH: /app/certs/ca.crt
   volumes:
     - ./certs:/app/certs:ro
     - ./agent:/app/agent:ro
@@ -37,7 +38,7 @@ x-node-env: &node-env
   JOIN_TOKEN: ${JOIN_TOKEN:-netwatch-dev-join-token-2026}
   CP_1_ADDR: 172.28.0.32:50051
   CP_2_ADDR: 172.28.0.33:50051
-  NATS_URL: nats://telemetry_agent:${NATS_TELEMETRY_AGENT_PASSWORD:-dev_agent_pass}@172.28.0.31:4222
+  NATS_URL: tls://telemetry_agent:${NATS_TELEMETRY_AGENT_PASSWORD:-dev_agent_pass}@172.28.0.31:4222
   CA_CERT_PATH: /app/pki/ca.crt
   CERT_DIR: /var/lib/netwatch/certs
 
@@ -133,7 +134,11 @@ services:
       - "4222:4222"
     volumes:
       - ./nats/nats-server.conf:/etc/nats/nats-server.conf:ro
+      - ./certs/nats:/etc/nats/certs:ro
       - jetstream_data:/data/jetstream
+    depends_on:
+      cert-init:
+        condition: service_completed_successfully
     command: ["-c", "/etc/nats/nats-server.conf"]
     networks:
       MGMT_NET:
@@ -160,9 +165,10 @@ services:
       NATS_HOST: ${NATS_HOST:-172.28.0.31}
       NATS_PORT: ${NATS_PORT:-4222}
       NATS_CONTROL_PLANE_PASSWORD: ${NATS_CONTROL_PLANE_PASSWORD:-dev_cp_pass}
-      NATS_URL: nats://control_plane:${NATS_CONTROL_PLANE_PASSWORD:-dev_cp_pass}@${NATS_HOST:-172.28.0.31}:${NATS_PORT:-4222}
+      NATS_URL: tls://control_plane:${NATS_CONTROL_PLANE_PASSWORD:-dev_cp_pass}@${NATS_HOST:-172.28.0.31}:${NATS_PORT:-4222}
       JOIN_TOKEN: ${JOIN_TOKEN:-netwatch-dev-join-token-2026}
       JWT_SECRET: ${JWT_SECRET:-netwatch-dev-jwt-secret-2026}
+      NATS_CA_PATH: /app/certs/ca.crt
       INSTANCE_ID: control-plane-1
     ports: ["8000:8000"]
     networks:
@@ -181,9 +187,10 @@ services:
       NATS_HOST: ${NATS_HOST:-172.28.0.31}
       NATS_PORT: ${NATS_PORT:-4222}
       NATS_CONTROL_PLANE_PASSWORD: ${NATS_CONTROL_PLANE_PASSWORD:-dev_cp_pass}
-      NATS_URL: nats://control_plane:${NATS_CONTROL_PLANE_PASSWORD:-dev_cp_pass}@${NATS_HOST:-172.28.0.31}:${NATS_PORT:-4222}
+      NATS_URL: tls://control_plane:${NATS_CONTROL_PLANE_PASSWORD:-dev_cp_pass}@${NATS_HOST:-172.28.0.31}:${NATS_PORT:-4222}
       JOIN_TOKEN: ${JOIN_TOKEN:-netwatch-dev-join-token-2026}
       JWT_SECRET: ${JWT_SECRET:-netwatch-dev-jwt-secret-2026}
+      NATS_CA_PATH: /app/certs/ca.crt
       INSTANCE_ID: control-plane-2
     ports: ["8001:8000"]
     networks:
@@ -199,10 +206,12 @@ services:
     restart: unless-stopped
     environment:
       DB_DSN: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-netwatch_dev_pass}@172.28.0.30:5432/${POSTGRES_DB:-netwatch}
-      NATS_URL: nats://worker_consumer:${NATS_WORKER_CONSUMER_PASSWORD:-dev_worker_pass}@172.28.0.31:4222
+      NATS_URL: tls://worker_consumer:${NATS_WORKER_CONSUMER_PASSWORD:-dev_worker_pass}@172.28.0.31:4222
+      NATS_CA_PATH: /app/pki/ca.crt
     volumes:
       - ./worker:/app/worker:ro
       - ./shared:/app/shared:ro
+      - ./certs/public:/app/pki:ro
     healthcheck:
       # Healthy while the ingest loop runs with a usable DB connection.
       test: ["CMD", "python", "-c", "import os, sys, time; sys.exit(0 if time.time() - os.path.getmtime('/tmp/netwatch-worker.health') < 20 else 1)"]

@@ -13,6 +13,7 @@ from nats.js.api import PubAck
 from agent.collector import MetricsCollector, SystemMetrics
 from agent.config import AgentConfig
 from agent.ring_buffer import BufferTick, RingBuffer
+from shared.telemetry_auth import SIGNATURE_HEADER, load_private_key, sign_payload, tls_context
 
 logger = logging.getLogger("netwatch.agent.publisher")
 
@@ -30,6 +31,23 @@ class TelemetryPublisher:
         self._ring_buffer = ring_buffer
         self._batch_size = batch_size
         self._subject = f"telemetry.{config.node_id}"
+        self._key_path = config.cert_dir / "agent.key"
+        self._signing_key = None
+        self._signing_key_mtime: float | None = None
+
+    def _current_signing_key(self):
+        """The private key behind this node's enrolled certificate, reloaded after rotation.
+
+        Returns None until the heartbeat thread has enrolled; ticks stay in the RingBuffer.
+        """
+        try:
+            mtime = self._key_path.stat().st_mtime
+        except OSError:
+            return None
+        if mtime != self._signing_key_mtime:
+            self._signing_key = load_private_key(self._key_path.read_bytes())
+            self._signing_key_mtime = mtime
+        return self._signing_key
 
     def _serialize_metrics(self, metrics: SystemMetrics) -> dict[str, Any]:
         data = asdict(metrics)
@@ -80,9 +98,15 @@ class TelemetryPublisher:
                         name=f"agent-{self._config.node_id}",
                         max_reconnect_attempts=-1,
                         reconnect_time_wait=1.0,
+                        tls=tls_context(self._config.ca_cert_path),
                     )
                     js = nc.jetstream()
                     logger.info("Connected to NATS JetStream; publishing to %s", self._subject)
+
+                signing_key = self._current_signing_key()
+                if signing_key is None:
+                    await asyncio.sleep(1.0)  # not enrolled yet: keep buffering
+                    continue
 
                 batch = self._ring_buffer.peek_batch(max_items=self._batch_size)
                 if not batch:
@@ -94,7 +118,11 @@ class TelemetryPublisher:
                     ack: PubAck = await js.publish(
                         self._subject,
                         raw_bytes,
-                        headers={"Nats-Msg-Id": msg_id},
+                        headers={
+                            "Nats-Msg-Id": msg_id,
+                            # Proves the message comes from this node (see worker/verifier.py).
+                            SIGNATURE_HEADER: sign_payload(signing_key, raw_bytes),
+                        },
                         timeout=2.0,
                     )
                     logger.debug(

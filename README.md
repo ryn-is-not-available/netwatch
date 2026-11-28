@@ -68,7 +68,9 @@ python scripts/gen_certs.py
 
 To rotate the PKI, stop the stack, delete the generated `*.key`/`*.crt` files and `certs/public/`, and start it again.
 
-> **Key isolation:** only the control planes mount `certs/` (they need `ca.key` to sign node CSRs). Nodes mount `certs/public/ca.crt` at `/app/pki/ca.crt` plus the CSR helper modules, so a compromised node cannot mint certificates for other node IDs.
+> **Key isolation:** only the control planes mount `certs/` (they need `ca.key` to sign node CSRs). Nodes and the worker mount `certs/public/ca.crt` at `/app/pki/ca.crt`; NATS mounts only `certs/nats/` (its server cert and key). A compromised node cannot mint certificates for other node IDs.
+
+> **Telemetry security:** NATS requires TLS for every client (`tls://` URLs, verified against the NetWatch CA). Agents share one NATS user, so each agent also signs every telemetry message with the private key behind its enrolled client certificate (`Netwatch-Sig` header). Before writing anything, the worker checks three things: the subject `telemetry.<node>` matches the payload's `node_id`, the node is enrolled and not revoked, and the signature verifies against the certificate stored at enrollment. It also accepts the previous certificate, so a 24h key rotation drops nothing. Messages that fail are discarded and logged.
 
 Verify all 10 long-running containers are up (`cert-init` shows as exited with code 0):
 

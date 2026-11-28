@@ -1,3 +1,4 @@
-# Telemetry ingestion worker (worker/)
+# Telemetry ingestion worker (worker/, plus shared/telemetry_auth for signature checks)
 nats-py==2.17.0
 psycopg[binary]==3.3.9
+cryptography==50.0.2
