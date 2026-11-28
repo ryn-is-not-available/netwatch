@@ -72,25 +72,24 @@ class LeaderElector:
             self._lock_conn = None
 
     def _promote_to_leader(self, conn: psycopg.Connection[Any]) -> int:
-            """Atomically revokes any prior active epoch, allocates epoch + 1, and records this leader."""
-            with psycopg.connect(self._db_dsn) as tx_conn:
-                with tx_conn.cursor() as cur:
-                    cur.execute(
-                        "UPDATE leader_epoch SET status = 'revoked' WHERE status = 'active';"
-                    )
-                    cur.execute("SELECT COALESCE(MAX(epoch), 0) + 1 FROM leader_epoch;")
-                    row = cur.fetchone()
-                    if row is None:
-                        raise RuntimeError("Failed to compute next leader epoch.")
-                    new_epoch = int(row[0])
+        """Atomically revokes any prior active epoch, allocates epoch + 1, and records this leader."""
+        with psycopg.connect(self._db_dsn) as tx_conn:
+            with tx_conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE leader_epoch SET status = 'revoked' WHERE status = 'active';"
+                )
+                cur.execute("SELECT COALESCE(MAX(epoch), 0) + 1 FROM leader_epoch;")
+                row = cur.fetchone()
+                if row is None:
+                    raise RuntimeError("Failed to compute next leader epoch.")
+                new_epoch = int(row[0])
 
-                    cur.execute(
-                        "INSERT INTO leader_epoch (epoch, leader_id, status) VALUES (%s, %s, 'active');",
-                        (new_epoch, self.instance_id),
-                    )
-                tx_conn.commit()
-            return new_epoch
-                    
+                cur.execute(
+                    "INSERT INTO leader_epoch (epoch, leader_id, status) VALUES (%s, %s, 'active');",
+                    (new_epoch, self.instance_id),
+                )
+            tx_conn.commit()
+        return new_epoch
 
     def try_acquire_or_renew(self) -> bool:
         """Attempts to acquire or verify the session advisory lock. Returns True iff this node is leader."""
@@ -131,27 +130,33 @@ class LeaderElector:
 
         Returns affected rowcount (0 if this instance is no longer the active epoch leader).
         """
-        is_ldr, cur_epoch = self.current_term()
-        epoch_to_check = expected_epoch if expected_epoch is not None else cur_epoch
-        if not is_ldr and expected_epoch is None:
-            return 0
-
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT 1
-                FROM leader_epoch
-                WHERE epoch = %s AND leader_id = %s AND status = 'active'
-                FOR SHARE
-                """,
-                (epoch_to_check, self.instance_id),
-            )
+            if expected_epoch is not None:
+                cur.execute(
+                    """
+                    SELECT 1
+                    FROM leader_epoch
+                    WHERE epoch = %s AND leader_id = %s AND status = 'active'
+                    FOR SHARE
+                    """,
+                    (expected_epoch, self.instance_id),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT 1
+                    FROM leader_epoch
+                    WHERE leader_id = %s AND status = 'active'
+                    FOR SHARE
+                    """,
+                    (self.instance_id,),
+                )
             if cur.fetchone() is None:
                 return 0
 
             cur.execute(sql, params)
             return cur.rowcount
-        
+
     def release(self) -> None:
         """Cleanly releases the advisory lock and marks the current epoch expired on graceful shutdown."""
         is_ldr, cur_epoch = self.current_term()

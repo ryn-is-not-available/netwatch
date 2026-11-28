@@ -1,26 +1,29 @@
-import asyncio
-from concurrent import futures
-from datetime import datetime, timezone
-import hmac
-import json
-import logging
-import os
-from pathlib import Path
-import signal
 import threading
-import time
-from urllib.parse import unquote
-
+import logging
+import psycopg
+import asyncio
+import uvicorn
+import signal
+import json
+import hmac
 import grpc
 import nats
-from nats.js.api import RetentionPolicy, StorageType, StreamConfig
-from nats.js.errors import NotFoundError
-import psycopg
+import uuid 
+import time
+import os
 
-from certs.client import sign_client_csr
-from control_plane.adapters.elector import LeaderElector
+
+from nats.js.api import RetentionPolicy, StorageType, StreamConfig
 from control_plane.domain.lease_manager import LeaseManager
+from control_plane.adapters.elector import LeaderElector
+from control_plane.api.rest import create_rest_app
 from shared import netwatch_pb2, netwatch_pb2_grpc
+from nats.js.errors import NotFoundError
+from certs.client import sign_client_csr
+from datetime import datetime, timezone
+from urllib.parse import unquote
+from concurrent import futures
+from pathlib import Path
 
 logging.basicConfig(
     level=logging.INFO,
@@ -119,6 +122,13 @@ class ControlServiceServicer(netwatch_pb2_grpc.ControlServiceServicer):
         context: grpc.ServicerContext,
     ) -> netwatch_pb2.Ack:
         self._verify_client_identity(context, request.node_id)
+        if not self.elector.is_leader:
+            return netwatch_pb2.Ack(
+                ok=False,
+                message="Not leader; retry against active leader",
+                server_timestamp_ms=int(time.time() * 1000),
+                leader_epoch=self.elector.epoch,
+            )
         node_id = request.node_id.strip()
         peer_ip = _extract_peer_ip(context)
         claimed_commands: list[dict[str, object]] = []
@@ -188,6 +198,13 @@ class ControlServiceServicer(netwatch_pb2_grpc.ControlServiceServicer):
         context: grpc.ServicerContext,
     ) -> netwatch_pb2.Ack:
         self._verify_client_identity(context, request.node_id)
+        if not self.elector.is_leader:
+            return netwatch_pb2.Ack(
+                ok=False,
+                message="Not leader; retry against active leader",
+                server_timestamp_ms=int(time.time() * 1000),
+                leader_epoch=self.elector.epoch,
+            )
         src_node_id = request.node_id.strip()
         dst_node_id = request.probe_target.strip()
         if not dst_node_id or src_node_id == dst_node_id:
@@ -199,6 +216,13 @@ class ControlServiceServicer(netwatch_pb2_grpc.ControlServiceServicer):
             else datetime.now(timezone.utc)
         )
         link_status = "up" if (request.success and request.packet_loss_pct <= 2.0) else "degraded"
+
+        trace_uuid: str | None = None
+        if request.probe_type == "trace" and request.probe_id:
+            try:
+                trace_uuid = str(uuid.UUID(request.probe_id.strip()))
+            except ValueError:
+                trace_uuid = None
 
         with psycopg.connect(self.db_dsn) as conn:
             with conn.cursor() as cur:
@@ -222,6 +246,47 @@ class ControlServiceServicer(netwatch_pb2_grpc.ControlServiceServicer):
                     ),
                 )
 
+                if trace_uuid is not None:
+                    measured_hops: list[dict[str, object]] | None = None
+                    if request.error_message and request.error_message.startswith("["):
+                        try:
+                            parsed = json.loads(request.error_message)
+                            if isinstance(parsed, list) and all(isinstance(h, dict) for h in parsed):
+                                measured_hops = parsed
+                        except json.JSONDecodeError:
+                            measured_hops = None
+
+                    if not measured_hops:
+                        measured_hops = [
+                            {
+                                "status": "DONE",
+                                "hop": 1,
+                                "node_id": dst_node_id,
+                                "rtt_ms": request.latency_ms,
+                                "success": request.success,
+                            }
+                        ]
+                    else:
+                        measured_hops[0]["status"] = "DONE"
+
+                    cur.execute(
+                        """
+                        UPDATE path_traces
+                        SET hops = %s::jsonb,
+                            packet_loss_pct = %s,
+                            avg_latency_ms = %s,
+                            captured_at = %s
+                        WHERE trace_id = %s::uuid;
+                        """,
+                        (
+                            json.dumps(measured_hops),
+                            request.packet_loss_pct,
+                            request.latency_ms,
+                            ts,
+                            trace_uuid,
+                        ),
+                    )
+
             if self.elector.is_leader:
                 epoch = self.elector.epoch
                 updated = self.elector.fenced_execute(
@@ -232,11 +297,11 @@ class ControlServiceServicer(netwatch_pb2_grpc.ControlServiceServicer):
                         latency_ms = %s,
                         packet_loss_pct = %s
                     WHERE src_node_id = %s
-                      AND dst_node_id = %s
-                      AND upper_inf(valid_during);
+                    AND dst_node_id = %s
+                    AND upper_inf(valid_during);
                     """,
                     (link_status, request.latency_ms, request.packet_loss_pct, src_node_id, dst_node_id),
-                    expected_epoch=epoch,
+                    expected_epoch=None,
                 )
                 if updated == 0:
                     self.elector.fenced_execute(
@@ -249,13 +314,13 @@ class ControlServiceServicer(netwatch_pb2_grpc.ControlServiceServicer):
                         )
                         VALUES (
                             %s, %s, %s, %s, %s,
-                            tstzrange(NOW(), 'infinity', '[)'),
-                            tstzrange(NOW(), 'infinity', '[)')
+                            tstzrange(NOW(), NULL, '[)'),
+                            tstzrange(NOW(), NULL, '[)')
                         )
                         ON CONFLICT DO NOTHING;
                         """,
                         (src_node_id, dst_node_id, link_status, request.latency_ms, request.packet_loss_pct),
-                        expected_epoch=epoch,
+                        expected_epoch=None,
                     )
             conn.commit()
 
@@ -265,7 +330,6 @@ class ControlServiceServicer(netwatch_pb2_grpc.ControlServiceServicer):
             server_timestamp_ms=int(time.time() * 1000),
             leader_epoch=self.elector.epoch,
         )
-
 
 async def _ensure_telemetry_stream(nats_url: str, retries: int = 15, delay_s: float = 1.0) -> None:
     nc = None
@@ -350,6 +414,21 @@ def serve() -> None:
     )
     lease_thread.start()
 
+    rest_app = create_rest_app(db_dsn=db_dsn, elector=elector)
+    rest_config = uvicorn.Config(
+        rest_app,
+        host="0.0.0.0",
+        port=int(os.environ.get("REST_PORT", "8000")),
+        log_level="info",
+    )
+    rest_server = uvicorn.Server(rest_config)
+    rest_thread = threading.Thread(
+        target=rest_server.run,
+        name="rest-api",
+        daemon=True,
+    )
+    rest_thread.start()
+
     cert_dir = Path(os.environ.get("CERT_DIR") or "/app/certs")
     server_cert = (cert_dir / "control-plane.crt").read_bytes()
     server_key = (cert_dir / "control-plane.key").read_bytes()
@@ -396,6 +475,7 @@ def serve() -> None:
     stop_event.set()
     elector_thread.join(timeout=3.0)
     lease_thread.join(timeout=3.0)
+    rest_server.should_exit = True
 
 
 if __name__ == "__main__":
